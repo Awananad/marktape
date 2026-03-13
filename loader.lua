@@ -150,28 +150,73 @@ task.spawn(function() task.wait(0.5);State.BaseFOV=Camera.FieldOfView end)
 --================================================================--
 --                      SCREEN GUI                                --
 --================================================================--
-local Gui=make("ScreenGui",{Name="MT_v8",ZIndexBehavior=Enum.ZIndexBehavior.Sibling,ResetOnSpawn=false})
+local Gui=make("ScreenGui",{Name="MT_v8",ZIndexBehavior=Enum.ZIndexBehavior.Sibling,ResetOnSpawn=false,IgnoreGuiInset=true})
 pcall(function() Gui.Parent=game:GetService("CoreGui") end)
 if not Gui.Parent then Gui.Parent=LP:WaitForChild("PlayerGui") end
 
-local MenuContainer=make("CanvasGroup",{Size=UDim2.new(1,0,1,0),BackgroundTransparency=1,GroupTransparency=0,Parent=Gui})
+local MenuContainer=make("Frame",{Size=UDim2.new(1,0,1,0),BackgroundTransparency=1,Parent=Gui})
+
 local Main=make("Frame",{AnchorPoint=Vector2.new(0.5,0.5),Size=UDim2.new(0,580,0,580),
-    Position=UDim2.new(0.5,0,0.5,0),BackgroundColor3=T.bg,BorderSizePixel=0,Parent=MenuContainer})
+    Position=UDim2.new(0.5,0,0.5,0),BackgroundColor3=T.bg,BorderSizePixel=0,ClipsDescendants=true,Parent=MenuContainer})
 make("UICorner",{CornerRadius=UDim.new(0,6),Parent=Main});tl(Main,"BackgroundColor3","bg")
 local mainStroke=make("UIStroke",{Color=T.border,Thickness=1,Parent=Main});tl(mainStroke,"Color","border")
 local MainScale=make("UIScale",{Scale=1,Parent=Main})
 
 local function animOpen()
-    if State.MenuTweening then return end;State.MenuTweening=true;State.MenuOpen=true
-    MenuContainer.Visible=true;MenuContainer.GroupTransparency=1;MainScale.Scale=0.92
-    tw(MenuContainer,{GroupTransparency=0},Config.Menu.AnimSpeed)
-    tw(MainScale,{Scale=1},Config.Menu.AnimSpeed,function() State.MenuTweening=false end)
+    if State.MenuTweening then return end
+    State.MenuTweening=true; State.MenuOpen=true
+    MenuContainer.Visible=true
+    MainScale.Scale=0.85
+    Main.BackgroundTransparency=1
+    mainStroke.Transparency=1
+
+    local startTime=tick()
+    local duration=Config.Menu.AnimSpeed
+    local conn
+    conn=RS.RenderStepped:Connect(function()
+        local t=math.clamp((tick()-startTime)/duration,0,1)
+        local e=1-math.pow(1-t,4)
+
+        MainScale.Scale=0.85+0.15*e
+        Main.BackgroundTransparency=1-((Config.Misc.MenuOpacity)*e)
+        mainStroke.Transparency=1-e
+
+        if t>=1 then
+            MainScale.Scale=1
+            Main.BackgroundTransparency=1-Config.Misc.MenuOpacity
+            mainStroke.Transparency=0
+            State.MenuTweening=false
+            conn:Disconnect()
+        end
+    end)
 end
+
 local function animClose()
-    if State.MenuTweening then return end;State.MenuTweening=true;State.MenuOpen=false
-    tw(MenuContainer,{GroupTransparency=1},Config.Menu.AnimSpeed)
-    tw(MainScale,{Scale=0.92},Config.Menu.AnimSpeed,function() MenuContainer.Visible=false;State.MenuTweening=false end)
+    if State.MenuTweening then return end
+    State.MenuTweening=true; State.MenuOpen=false
+
+    local startTime=tick()
+    local duration=Config.Menu.AnimSpeed
+    local conn
+    conn=RS.RenderStepped:Connect(function()
+        local t=math.clamp((tick()-startTime)/duration,0,1)
+        local e=1-math.pow(1-t,4)
+
+        MainScale.Scale=1-0.15*e
+        Main.BackgroundTransparency=(1-Config.Misc.MenuOpacity)+(Config.Misc.MenuOpacity*e)
+        mainStroke.Transparency=e
+
+        if t>=1 then
+            MenuContainer.Visible=false
+            MainScale.Scale=1
+            Main.BackgroundTransparency=1-Config.Misc.MenuOpacity
+            mainStroke.Transparency=0
+            State.MenuTweening=false
+            conn:Disconnect()
+        end
+    end)
 end
+
 local function toggleMenu() if State.MenuOpen then animClose() else animOpen() end end
 
 local Header=make("Frame",{Size=UDim2.new(1,0,0,36),BackgroundColor3=T.bg2,BorderSizePixel=0,Parent=Main})
@@ -223,7 +268,6 @@ local function addTab(name,order)
         content.Visible=true;ind.Visible=true;tw(btn,{TextColor3=T.text},0.15)
     end);return content
 end
-
 -- Bind Mode Popup
 local activePopupCB,popupJust=nil,false
 local BindPopup=make("Frame",{Size=UDim2.new(0,120,0,0),AutomaticSize=Enum.AutomaticSize.Y,
