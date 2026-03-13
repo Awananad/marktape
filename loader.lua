@@ -151,117 +151,42 @@ task.spawn(function() task.wait(0.5);State.BaseFOV=Camera.FieldOfView end)
 --                      SCREEN GUI                                --
 --================================================================--
 --================================================================--
---              ЗАМЕНИ ОТ "SCREEN GUI" ДО "HEADER"                --
---================================================================--
-
-local Gui=make("ScreenGui",{
-    Name="MT_v8",
-    ZIndexBehavior=Enum.ZIndexBehavior.Sibling,
-    ResetOnSpawn=false,
-    IgnoreGuiInset=true,
-})
+local Gui=make("ScreenGui",{Name="MT_v8",ZIndexBehavior=Enum.ZIndexBehavior.Sibling,ResetOnSpawn=false,IgnoreGuiInset=true})
 pcall(function() Gui.Parent=game:GetService("CoreGui") end)
 if not Gui.Parent then Gui.Parent=LP:WaitForChild("PlayerGui") end
 
--- Используем Frame вместо CanvasGroup (анти-блюр)
-local MenuContainer=make("Frame",{
-    Size=UDim2.new(1,0,1,0),
-    BackgroundTransparency=1,
-    Parent=Gui,
-})
+local MenuContainer=make("Frame",{Size=UDim2.new(1,0,1,0),BackgroundTransparency=1,Parent=Gui})
 
-local Main=make("Frame",{
-    AnchorPoint=Vector2.new(0.5,0.5),
-    Size=UDim2.new(0,580,0,580),
-    Position=UDim2.new(0.5,0,0.5,0),
-    BackgroundColor3=T.bg,
-    BorderSizePixel=0,
-    Parent=MenuContainer,
-})
+local Main=make("Frame",{AnchorPoint=Vector2.new(0.5,0.5),Size=UDim2.new(0,580,0,580),
+    Position=UDim2.new(0.5,0,0.5,0),BackgroundColor3=T.bg,BorderSizePixel=0,ClipsDescendants=true,Parent=MenuContainer})
 make("UICorner",{CornerRadius=UDim.new(0,6),Parent=Main});tl(Main,"BackgroundColor3","bg")
 local mainStroke=make("UIStroke",{Color=T.border,Thickness=1,Parent=Main});tl(mainStroke,"Color","border")
-
--- UIScale для анимации, но ВСЕГДА snap к 1.0 после завершения
 local MainScale=make("UIScale",{Scale=1,Parent=Main})
-
---================================================================--
---     РАБОЧИЕ АНИМАЦИИ (Frame-совместимые, без blur)             --
---================================================================--
-
--- Собираем все элементы которые нужно фейдить
-local fadeElements = {} -- заполнится после создания UI
-
-local function collectFadeElements()
-    fadeElements = {}
-    local function scan(parent)
-        for _, child in ipairs(parent:GetDescendants()) do
-            if child:IsA("Frame") and child.BackgroundTransparency < 1 then
-                table.insert(fadeElements, {obj=child, prop="BackgroundTransparency", base=child.BackgroundTransparency})
-            end
-            if child:IsA("TextLabel") or child:IsA("TextButton") then
-                table.insert(fadeElements, {obj=child, prop="TextTransparency", base=child.TextTransparency})
-                if child.BackgroundTransparency < 1 then
-                    table.insert(fadeElements, {obj=child, prop="BackgroundTransparency", base=child.BackgroundTransparency})
-                end
-            end
-            if child:IsA("UIStroke") then
-                table.insert(fadeElements, {obj=child, prop="Transparency", base=child.Transparency})
-            end
-            if child:IsA("ScrollingFrame") then
-                table.insert(fadeElements, {obj=child, prop="ScrollBarImageTransparency", base=child.ScrollBarImageTransparency})
-            end
-        end
-    end
-    scan(Main)
-end
-
-local function setFade(alpha)
-    for _, e in ipairs(fadeElements) do
-        pcall(function()
-            -- alpha 1 = fully visible, 0 = invisible
-            local baseT = e.base
-            e.obj[e.prop] = baseT + (1 - baseT) * (1 - alpha)
-        end)
-    end
-end
 
 local function animOpen()
     if State.MenuTweening then return end
-    State.MenuTweening = true
-    State.MenuOpen = true
-    MenuContainer.Visible = true
+    State.MenuTweening=true; State.MenuOpen=true
+    MenuContainer.Visible=true
+    MainScale.Scale=0.85
+    Main.BackgroundTransparency=1
+    mainStroke.Transparency=1
 
-    -- Собираем элементы для фейда (один раз)
-    if #fadeElements == 0 then
-        collectFadeElements()
-    end
-
-    -- Начальное состояние
-    MainScale.Scale = 0.92
-    setFade(0)
-
-    -- Анимация через RenderStep для плавности
-    local startTime = tick()
-    local duration = Config.Menu.AnimSpeed
+    local startTime=tick()
+    local duration=Config.Menu.AnimSpeed
     local conn
+    conn=RS.RenderStepped:Connect(function()
+        local t=math.clamp((tick()-startTime)/duration,0,1)
+        local e=1-math.pow(1-t,4)
 
-    conn = RS.RenderStepped:Connect(function()
-        local elapsed = tick() - startTime
-        local progress = math.clamp(elapsed / duration, 0, 1)
+        MainScale.Scale=0.85+0.15*e
+        Main.BackgroundTransparency=1-((Config.Misc.MenuOpacity)*e)
+        mainStroke.Transparency=1-e
 
-        -- Easing (Quart Out)
-        local eased = 1 - math.pow(1 - progress, 4)
-
-        -- Scale: 0.92 → 1.0
-        MainScale.Scale = 0.92 + 0.08 * eased
-
-        -- Fade: 0 → 1
-        setFade(eased)
-
-        if progress >= 1 then
-            MainScale.Scale = 1  -- SNAP to exactly 1 (anti-blur!)
-            setFade(1)
-            State.MenuTweening = false
+        if t>=1 then
+            MainScale.Scale=1
+            Main.BackgroundTransparency=1-Config.Misc.MenuOpacity
+            mainStroke.Transparency=0
+            State.MenuTweening=false
             conn:Disconnect()
         end
     end)
@@ -269,42 +194,80 @@ end
 
 local function animClose()
     if State.MenuTweening then return end
-    State.MenuTweening = true
-    State.MenuOpen = false
+    State.MenuTweening=true; State.MenuOpen=false
 
-    if #fadeElements == 0 then
-        collectFadeElements()
-    end
-
-    local startTime = tick()
-    local duration = Config.Menu.AnimSpeed
+    local startTime=tick()
+    local duration=Config.Menu.AnimSpeed
     local conn
+    conn=RS.RenderStepped:Connect(function()
+        local t=math.clamp((tick()-startTime)/duration,0,1)
+        local e=1-math.pow(1-t,4)
 
-    conn = RS.RenderStepped:Connect(function()
-        local elapsed = tick() - startTime
-        local progress = math.clamp(elapsed / duration, 0, 1)
+        MainScale.Scale=1-0.15*e
+        Main.BackgroundTransparency=(1-Config.Misc.MenuOpacity)+(Config.Misc.MenuOpacity*e)
+        mainStroke.Transparency=e
 
-        -- Easing (Quart Out)
-        local eased = 1 - math.pow(1 - progress, 4)
-
-        -- Scale: 1.0 → 0.92
-        MainScale.Scale = 1 - 0.08 * eased
-
-        -- Fade: 1 → 0
-        setFade(1 - eased)
-
-        if progress >= 1 then
-            MenuContainer.Visible = false
-            MainScale.Scale = 1  -- Reset to 1 when hidden
-            setFade(1)           -- Reset transparencies
-            State.MenuTweening = false
+        if t>=1 then
+            MenuContainer.Visible=false
+            MainScale.Scale=1
+            Main.BackgroundTransparency=1-Config.Misc.MenuOpacity
+            mainStroke.Transparency=0
+            State.MenuTweening=false
             conn:Disconnect()
         end
     end)
 end
 
-local function toggleMenu()
-    if State.MenuOpen then animClose() else animOpen() end
+local function toggleMenu() if State.MenuOpen then animClose() else animOpen() end end
+
+local Header=make("Frame",{Size=UDim2.new(1,0,0,36),BackgroundColor3=T.bg2,BorderSizePixel=0,Parent=Main})
+tl(Header,"BackgroundColor3","bg2")
+make("UICorner",{CornerRadius=UDim.new(0,6),Parent=Header})
+local hP=make("Frame",{Size=UDim2.new(1,0,0,8),Position=UDim2.new(0,0,1,-8),BackgroundColor3=T.bg2,BorderSizePixel=0,Parent=Header})
+tl(hP,"BackgroundColor3","bg2")
+local hTitle=make("TextLabel",{Size=UDim2.new(0,100,1,0),Position=UDim2.new(0,14,0,0),BackgroundTransparency=1,
+    Text="MARKTAPE",TextColor3=T.accent,Font=Enum.Font.GothamBold,TextSize=14,
+    TextXAlignment=Enum.TextXAlignment.Left,Parent=Header});tl(hTitle,"TextColor3","accent")
+make("TextLabel",{Size=UDim2.new(0,150,1,0),Position=UDim2.new(0,108,0,0),BackgroundTransparency=1,
+    Text="| Da Strike v8",TextColor3=T.dim,Font=Enum.Font.Gotham,TextSize=12,
+    TextXAlignment=Enum.TextXAlignment.Left,Parent=Header})
+local CloseBtn=make("TextButton",{Size=UDim2.new(0,36,0,36),Position=UDim2.new(1,-36,0,0),
+    BackgroundTransparency=1,Text="×",TextColor3=T.dim,Font=Enum.Font.GothamBold,TextSize=20,Parent=Header})
+CloseBtn.MouseEnter:Connect(function() tw(CloseBtn,{TextColor3=T.accent},0.15) end)
+CloseBtn.MouseLeave:Connect(function() tw(CloseBtn,{TextColor3=T.dim},0.15) end)
+CloseBtn.MouseButton1Click:Connect(animClose)
+local accentLine=make("Frame",{Size=UDim2.new(1,0,0,2),Position=UDim2.new(0,0,0,36),
+    BackgroundColor3=T.accent,BorderSizePixel=0,Parent=Main});tl(accentLine,"BackgroundColor3","accent")
+
+do local dr,dS,sP
+    Header.InputBegan:Connect(function(i) if i.UserInputType==Enum.UserInputType.MouseButton1 then dr=true;dS=i.Position;sP=Main.Position end end)
+    Header.InputEnded:Connect(function(i) if i.UserInputType==Enum.UserInputType.MouseButton1 then dr=false end end)
+    UIS.InputChanged:Connect(function(i) if dr and i.UserInputType==Enum.UserInputType.MouseMovement then
+        local d=i.Position-dS;Main.Position=UDim2.new(sP.X.Scale,sP.X.Offset+d.X,sP.Y.Scale,sP.Y.Offset+d.Y) end end)
+end
+
+local TabBar=make("Frame",{Size=UDim2.new(1,0,0,32),Position=UDim2.new(0,0,0,38),BackgroundColor3=T.bg2,BorderSizePixel=0,Parent=Main})
+tl(TabBar,"BackgroundColor3","bg2")
+local ContentArea=make("Frame",{Size=UDim2.new(1,-20,1,-80),Position=UDim2.new(0,10,0,74),
+    BackgroundTransparency=1,BorderSizePixel=0,ClipsDescendants=true,Parent=Main})
+local allTabs={}
+local function addTab(name,order)
+    local btn=make("TextButton",{Size=UDim2.new(0,116,1,0),Position=UDim2.new(0,(order-1)*116,0,0),
+        BackgroundTransparency=1,Text=name,TextColor3=T.dim,Font=Enum.Font.GothamSemibold,TextSize=12,Parent=TabBar})
+    local ind=make("Frame",{Size=UDim2.new(0.6,0,0,2),Position=UDim2.new(0.2,0,1,-2),
+        BackgroundColor3=T.accent,BorderSizePixel=0,Visible=false,Parent=btn})
+    make("UICorner",{CornerRadius=UDim.new(0,1),Parent=ind});tl(ind,"BackgroundColor3","accent")
+    local content=make("ScrollingFrame",{Size=UDim2.new(1,0,1,0),BackgroundTransparency=1,
+        BorderSizePixel=0,ScrollBarThickness=3,ScrollBarImageColor3=T.accent,Visible=false,
+        CanvasSize=UDim2.new(0,0,0,0),AutomaticCanvasSize=Enum.AutomaticSize.Y,Parent=ContentArea})
+    tl(content,"ScrollBarImageColor3","accent")
+    make("UIListLayout",{SortOrder=Enum.SortOrder.LayoutOrder,Padding=UDim.new(0,8),Parent=content})
+    make("UIPadding",{PaddingTop=UDim.new(0,4),PaddingBottom=UDim.new(0,8),Parent=content})
+    local tab={Btn=btn,Ind=ind,Content=content};table.insert(allTabs,tab)
+    btn.MouseButton1Click:Connect(function()
+        for _,t2 in ipairs(allTabs) do t2.Content.Visible=false;t2.Ind.Visible=false;tw(t2.Btn,{TextColor3=T.dim},0.15) end
+        content.Visible=true;ind.Visible=true;tw(btn,{TextColor3=T.text},0.15)
+    end);return content
 end
 -- Bind Mode Popup
 local activePopupCB,popupJust=nil,false
