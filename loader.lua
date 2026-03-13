@@ -7,36 +7,6 @@
     ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝╚═╝     ╚══════╝
     Da Strike v8 — Precise Speed / Clean Camera
 ]]
---// === ANTI-BLUR PATCH === //--
--- Fix 1: Snap UIScale to exactly 1 every frame when menu is open
-RS.RenderStepped:Connect(function()
-    if State.MenuOpen and not State.MenuTweening then
-        if MainScale.Scale ~= 1 then
-            MainScale.Scale = 1
-        end
-    end
-end)
-
--- Fix 2: Force pixel-perfect rendering
-Gui.IgnoreGuiInset = true
-
--- Fix 3: Remove CanvasGroup blur by reparenting
-if MenuContainer:IsA("CanvasGroup") then
-    local newContainer = Instance.new("Frame")
-    newContainer.Size = UDim2.new(1,0,1,0)
-    newContainer.BackgroundTransparency = 1
-    newContainer.Parent = Gui
-    
-    for _, child in ipairs(MenuContainer:GetChildren()) do
-        child.Parent = newContainer
-    end
-    
-    MenuContainer:Destroy()
-    MenuContainer = newContainer
-    Main.Parent = MenuContainer
-end
-
-print("[MARKTAPE] Anti-blur patch applied")
 local Players=game:GetService("Players")
 local RS=game:GetService("RunService")
 local UIS=game:GetService("UserInputService")
@@ -904,5 +874,35 @@ RS.Heartbeat:Connect(function()
                 if dir.Magnitude>0 then hrp.CFrame=hrp.CFrame+dir*Config.Speed.Value end end end
     end
 end)
+--// === ANTI-BLUR PATCH === //--
+-- Fix 1: Snap UIScale to exactly 1 every frame when menu is open
+RS.RenderStepped:Connect(function()
+    if State.MenuOpen and not State.MenuTweening then
+        if MainScale.Scale ~= 1 then
+            MainScale.Scale = 1
+        end
+    end
+end)
+
+-- Fix 2: Force pixel-perfect rendering
+Gui.IgnoreGuiInset = true
+
+-- Fix 3: Remove CanvasGroup blur by reparenting
+if MenuContainer:IsA("CanvasGroup") then
+    local newContainer = Instance.new("Frame")
+    newContainer.Size = UDim2.new(1,0,1,0)
+    newContainer.BackgroundTransparency = 1
+    newContainer.Parent = Gui
+    
+    for _, child in ipairs(MenuContainer:GetChildren()) do
+        child.Parent = newContainer
+    end
+    
+    MenuContainer:Destroy()
+    MenuContainer = newContainer
+    Main.Parent = MenuContainer
+end
+
+print("[MARKTAPE] Anti-blur patch applied")
 
 print("[MARKTAPE] Da Strike v8.0 — Precise Speed + Clean Camera")
