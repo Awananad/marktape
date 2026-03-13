@@ -5,7 +5,7 @@
 ██╔══██║██╔══██║██╔══██╗██╔═██╗ ██║ ██╔══██║██╔═══╝ ██╔══╝
 ██║ ██║██║ ██║██║ ██║██║ ██╗ ██║ ██║ ██║██║ ███████╗
 ╚═╝ ╚═╝╚═╝ ╚═╝╚═╝ ╚═╝╚═╝ ╚═╝ ╚═╝ ╚═╝ ╚═╝╚═╝ ╚══════╝
-Da Strike v8.2 — Wall Check + Death Fix
+Da Strike v8.3 — Team Check + Smart Wall Check
 ]]
 local Players=game:GetService("Players")
 local RS=game:GetService("RunService")
@@ -19,9 +19,10 @@ local Config={
     Aimbot={Enabled=false,Bind=Enum.UserInputType.MouseButton2,BindIsKB=false,BindMode="Hold",
         PredictionX=0.12,PredictionY=0.12,AutoPrediction=false,Smooth=5,HitPart="Head",
         FOVRadius=200,ShowFOV=true,RagdollCheck=true,
-        WallCheck=true,  -- NEW: Wall Check
-        DeathCheck=true, -- NEW: Skip dead/falling targets
-        MinTargetHeight=-3}, -- NEW: Minimum height difference (ignore if target too low)
+        WallCheck=true,      -- Wall check for FINDING targets only
+        TeamCheck=true,      -- NEW: Skip teammates
+        DeathCheck=true,
+        MinTargetHeight=-3},
     Speed={Enabled=false,Bind=Enum.KeyCode.LeftShift,BindIsKB=true,BindMode="Press",Value=0.5,
         CamLag=3.5,CamFOV=15,CamTilt=4,CamSmooth=0.07},
     Menu={Bind=Enum.KeyCode.RightControl,BindIsKB=true,AnimSpeed=0.25},
@@ -33,8 +34,8 @@ local State={AimHold=false,AimPressed=false,SpeedHold=false,SpeedPressed=false,
     LockedTarget=nil,MenuOpen=true,MenuTweening=false,
     CamLagOffset=Vector3.new(0,0,0),CamFOVCurrent=0,CamTiltCurrent=0,
     BaseFOV=70,IsMoving=false,
-    LastTargetPos=nil, -- NEW: Track last target position
-    TargetLostTime=0}  -- NEW: Time when target was lost
+    TargetBehindWall=false,  -- NEW: Track if current target is behind wall
+    LastVisiblePos=nil}      -- NEW: Last visible position of target
 
 local PingTiers={
     {max=40,px=0.04,py=0.04},{max=60,px=0.06,py=0.06},{max=80,px=0.085,py=0.085},
@@ -50,7 +51,7 @@ local T={
     togOff=Color3.fromRGB(48,48,68),inputBG=Color3.fromRGB(25,25,40),
     slFill=Color3.fromRGB(200,55,55),slBG=Color3.fromRGB(30,30,48),
     green=Color3.fromRGB(55,200,85),yellow=Color3.fromRGB(220,180,50),orange=Color3.fromRGB(230,130,50),
-    red=Color3.fromRGB(220,60,60),
+    red=Color3.fromRGB(220,60,60),blue=Color3.fromRGB(80,140,220),
 }
 local ModeColors={Always=T.green,Hold=T.accent,Press=T.yellow}
 local TL,TU={},{}
@@ -113,7 +114,54 @@ end
 local function lerp(a,b,t) return a+(b-a)*t end
 
 --================================================================--
--- IMPROVED DEATH & RAGDOLL CHECK --
+-- TEAM CHECK --
+--================================================================--
+local function isEnemy(plr)
+    if not Config.Aimbot.TeamCheck then return true end -- Disabled = everyone is enemy
+    if not plr or not LP then return false end
+    if plr == LP then return false end
+    
+    -- Check if teams exist
+    local myTeam = LP.Team
+    local theirTeam = plr.Team
+    
+    -- No teams = FFA mode, everyone is enemy
+    if not myTeam and not theirTeam then return true end
+    
+    -- One has team, other doesn't
+    if not myTeam or not theirTeam then return true end
+    
+    -- Same team = teammate
+    if myTeam == theirTeam then return false end
+    
+    -- Check TeamColor as backup
+    pcall(function()
+        if LP.TeamColor and plr.TeamColor then
+            if LP.TeamColor == plr.TeamColor then return false end
+        end
+    end)
+    
+    -- Check Neutral (neutral players are enemies to everyone)
+    pcall(function()
+        if LP.Neutral then return true end
+        if plr.Neutral then return true end
+    end)
+    
+    return true -- Different team = enemy
+end
+
+-- Get team color for display
+local function getTeamInfo(plr)
+    if not plr then return nil, nil end
+    local team = plr.Team
+    if team then
+        return team.Name, team.TeamColor.Color
+    end
+    return "No Team", T.dim
+end
+
+--================================================================--
+-- DEATH & RAGDOLL CHECK --
 --================================================================--
 local RagStates={
     [Enum.HumanoidStateType.Ragdoll]=1,
@@ -128,20 +176,15 @@ local function isRagdolled(ch)
     local hum=ch:FindFirstChildOfClass("Humanoid")
     if not hum then return true end
     
-    -- Check humanoid state
     local ok,st=pcall(function() return hum:GetState() end)
     if ok and RagStates[st] then return true end
-    
-    -- Check PlatformStand
     if hum.PlatformStand then return true end
     
-    -- Check common ragdoll values
     for _,n in ipairs({"Ragdolled","Ragdoll","IsRagdolled","KnockedOut","Knocked","Stunned"}) do
         local v=ch:FindFirstChild(n)
         if v and v:IsA("BoolValue") and v.Value then return true end
     end
     
-    -- Check attributes
     local ra=false
     pcall(function()
         if ch:GetAttribute("Ragdolled") or ch:GetAttribute("Ragdoll") or 
@@ -153,7 +196,6 @@ local function isRagdolled(ch)
     end)
     if ra then return true end
     
-    -- Check for active Motor6D (no motors = ragdolled)
     local hm=false
     for _,d in ipairs(ch:GetDescendants()) do
         if d:IsA("Motor6D") and d.Enabled~=false and d.Part0 and d.Part1 and 
@@ -167,33 +209,23 @@ local function isRagdolled(ch)
     return false
 end
 
--- NEW: Check if target is dead or dying
 local function isDead(ch)
     if not ch then return true end
     local hum = ch:FindFirstChildOfClass("Humanoid")
     if not hum then return true end
-    
-    -- Direct health check
     if hum.Health <= 0 then return true end
     
-    -- Check death state
     local ok, st = pcall(function() return hum:GetState() end)
     if ok and st == Enum.HumanoidStateType.Dead then return true end
     
-    -- Check for common death indicators
     local hrp = ch:FindFirstChild("HumanoidRootPart")
     local head = ch:FindFirstChild("Head")
-    
-    -- If HRP or Head is gone, likely dead
     if not hrp or not head then return true end
-    
-    -- Check if anchored (dead body cleanup)
     if hrp.Anchored then return true end
     
     return false
 end
 
--- NEW: Check if target is falling/on ground (dead body falling)
 local function isFalling(ch, myChar)
     if not ch or not myChar then return false end
     
@@ -202,15 +234,13 @@ local function isFalling(ch, myChar)
     
     if not theirHRP or not myHRP then return false end
     
-    -- Check if target is significantly below us
     local heightDiff = theirHRP.Position.Y - myHRP.Position.Y
     if heightDiff < Config.Aimbot.MinTargetHeight then
         return true
     end
     
-    -- Check vertical velocity (falling fast)
     local vel = theirHRP.Velocity
-    if vel.Y < -50 then -- Falling fast
+    if vel.Y < -50 then
         return true
     end
     
@@ -225,11 +255,9 @@ local function isAlive(plr)
     local h=ch:FindFirstChildOfClass("Humanoid")
     if not h or h.Health<=0 then return false end
     
-    -- Check for HumanoidRootPart
     local hrp = ch:FindFirstChild("HumanoidRootPart")
     if not hrp then return false end
     
-    -- Check death state
     local ok, st = pcall(function() return h:GetState() end)
     if ok and st == Enum.HumanoidStateType.Dead then return false end
     
@@ -240,11 +268,10 @@ end
 -- WALL CHECK (VISIBILITY) --
 --================================================================--
 local WallCheckParams = RaycastParams.new()
-WallCheckParams.FilterType = Enum.RaycastFilterType.Blacklist
+WallCheckParams.FilterType = Enum.RaycastFilterType.Exclude
 WallCheckParams.IgnoreWater = true
 
 local function isVisible(targetPart, targetChar)
-    if not Config.Aimbot.WallCheck then return true end -- Skip if disabled
     if not targetPart or not targetChar then return false end
     
     local myChar = LP.Character
@@ -255,87 +282,75 @@ local function isVisible(targetPart, targetChar)
     local direction = (targetPos - origin)
     local distance = direction.Magnitude
     
-    -- Update raycast filter
     WallCheckParams.FilterDescendantsInstances = {myChar, targetChar}
     
     local result = workspace:Raycast(origin, direction.Unit * (distance - 0.5), WallCheckParams)
     
     if result then
-        -- Hit something - check if it's part of target
         if result.Instance:IsDescendantOf(targetChar) then
             return true
         end
-        -- Hit a wall or other object
         return false
     end
     
     return true
 end
 
--- NEW: Extended visibility check with multiple points
-local function isVisibleExtended(targetChar)
-    if not Config.Aimbot.WallCheck then return true end
-    if not targetChar then return false end
-    
-    -- Check multiple body parts for visibility
-    local partsToCheck = {"Head", "HumanoidRootPart", "UpperTorso", "Torso"}
-    
-    for _, partName in ipairs(partsToCheck) do
-        local part = targetChar:FindFirstChild(partName)
-        if part and isVisible(part, targetChar) then
-            return true
-        end
-    end
-    
-    return false
-end
+--================================================================--
+-- TARGET VALIDATION --
+--================================================================--
 
---================================================================--
--- IMPROVED TARGET VALIDATION --
---================================================================--
-local function isValidTarget(plr)
+-- Full validation for FINDING new targets (includes wall check)
+local function isValidTargetForSearch(plr)
     if not isAlive(plr) then return false end
+    if not isEnemy(plr) then return false end -- Team check
     
     local ch = plr.Character
     if not ch then return false end
     
-    -- Check death
     if Config.Aimbot.DeathCheck and isDead(ch) then return false end
-    
-    -- Check ragdoll
     if Config.Aimbot.RagdollCheck and isRagdolled(ch) then return false end
     
-    -- Check if falling (dead body)
     local myChar = LP.Character
     if Config.Aimbot.DeathCheck and myChar and isFalling(ch, myChar) then return false end
     
-    -- Check wall
+    -- Wall check for search only
     local part = ch:FindFirstChild(Config.Aimbot.HitPart) or ch:FindFirstChild("Head")
     if Config.Aimbot.WallCheck and part and not isVisible(part, ch) then return false end
     
     return true
 end
 
--- Separate check for aim (includes wall check)
-local function canAimAt(plr)
+-- Validation for KEEPING locked target (NO wall check - keeps lock through walls)
+local function isValidTargetForLock(plr)
+    if not isAlive(plr) then return false end
+    if not isEnemy(plr) then return false end -- Team check still applies
+    
+    local ch = plr.Character
+    if not ch then return false end
+    
+    if Config.Aimbot.DeathCheck and isDead(ch) then return false end
+    if Config.Aimbot.RagdollCheck and isRagdolled(ch) then return false end
+    
+    local myChar = LP.Character
+    if Config.Aimbot.DeathCheck and myChar and isFalling(ch, myChar) then return false end
+    
+    -- NO WALL CHECK HERE - target stays locked even behind wall
+    return true
+end
+
+-- Check if can currently aim (for prediction)
+local function canCurrentlyAim(plr)
     if not isAlive(plr) then return false end
     
     local ch = plr.Character
     if not ch then return false end
     
-    -- Death check (instant)
     if isDead(ch) then return false end
-    
-    -- Ragdoll check
     if Config.Aimbot.RagdollCheck and isRagdolled(ch) then return false end
     
-    -- Height check (don't aim at bodies on ground)
     local myChar = LP.Character
     if myChar and isFalling(ch, myChar) then return false end
-    
-    -- Wall check
-    local part = ch:FindFirstChild(Config.Aimbot.HitPart) or ch:FindFirstChild("Head")
-    if Config.Aimbot.WallCheck and part and not isVisible(part, ch) then return false end
     
     return true
 end
@@ -369,7 +384,7 @@ task.spawn(function() task.wait(0.5);State.BaseFOV=Camera.FieldOfView end)
 -- SCREEN GUI + MENU --
 --================================================================--
 local Gui=make("ScreenGui",{
-    Name="MT_v82",
+    Name="MT_v83",
     ZIndexBehavior=Enum.ZIndexBehavior.Sibling,
     ResetOnSpawn=false,
     IgnoreGuiInset=true,
@@ -385,7 +400,7 @@ local MenuContainer=make("Frame",{
 
 local Main=make("Frame",{
     AnchorPoint=Vector2.new(0.5,0.5),
-    Size=UDim2.new(0,580,0,620), -- Slightly taller for new options
+    Size=UDim2.new(0,580,0,640),
     Position=UDim2.new(0.5,0,0.5,0),
     BackgroundColor3=T.bg,
     BorderSizePixel=0,
@@ -406,21 +421,15 @@ local function animOpen()
     if State.MenuTweening then return end
     State.MenuTweening=true
     State.MenuOpen=true
-
     if animConn then pcall(function() animConn:Disconnect() end) end
-
     MenuContainer.Visible=true
     MainScale.Scale=0.85
-
     local t0=tick()
     local dur=Config.Menu.AnimSpeed
-
     animConn=RS.RenderStepped:Connect(function()
         local prog=math.clamp((tick()-t0)/dur,0,1)
         local e=1-(1-prog)^4
-
         MainScale.Scale=0.85+0.15*e
-
         if prog>=1 then
             MainScale.Scale=1
             State.MenuTweening=false
@@ -433,18 +442,13 @@ local function animClose()
     if State.MenuTweening then return end
     State.MenuTweening=true
     State.MenuOpen=false
-
     if animConn then pcall(function() animConn:Disconnect() end) end
-
     local t0=tick()
     local dur=Config.Menu.AnimSpeed
-
     animConn=RS.RenderStepped:Connect(function()
         local prog=math.clamp((tick()-t0)/dur,0,1)
         local e=1-(1-prog)^4
-
         MainScale.Scale=1-0.15*e
-
         if prog>=1 then
             MenuContainer.Visible=false
             MainScale.Scale=1
@@ -456,11 +460,7 @@ end
 
 local function toggleMenu()
     if State.MenuTweening then return end
-    if State.MenuOpen then
-        animClose()
-    else
-        animOpen()
-    end
+    if State.MenuOpen then animClose() else animOpen() end
 end
 
 --================================================================--
@@ -476,7 +476,7 @@ local hTitle=make("TextLabel",{Size=UDim2.new(0,100,1,0),Position=UDim2.new(0,14
     TextXAlignment=Enum.TextXAlignment.Left,Parent=Header})
 tl(hTitle,"TextColor3","accent")
 make("TextLabel",{Size=UDim2.new(0,150,1,0),Position=UDim2.new(0,108,0,0),BackgroundTransparency=1,
-    Text="| Da Strike v8.2",TextColor3=T.dim,Font=Enum.Font.Gotham,TextSize=12,
+    Text="| Da Strike v8.3",TextColor3=T.dim,Font=Enum.Font.Gotham,TextSize=12,
     TextXAlignment=Enum.TextXAlignment.Left,Parent=Header})
 local CloseBtn=make("TextButton",{Size=UDim2.new(0,36,0,36),Position=UDim2.new(1,-36,0,0),
     BackgroundTransparency=1,Text="×",TextColor3=T.dim,Font=Enum.Font.GothamBold,TextSize=20,Parent=Header})
@@ -773,14 +773,16 @@ addDropdown(secAim,"Hit Part",{"Head","HumanoidRootPart","UpperTorso","LowerTors
     Config.Aimbot.HitPart,3,function(v) Config.Aimbot.HitPart=v end)
 addSlider(secAim,"Smooth",1,20,Config.Aimbot.Smooth,0.5,4,function(v) Config.Aimbot.Smooth=v end)
 
--- NEW: Checks Section
+-- Target Checks Section
 local secChecks=addSection(tabAim,"Target Checks",2)
-addToggle(secChecks,"Wall Check",Config.Aimbot.WallCheck,1,function(v) Config.Aimbot.WallCheck=v end)
-addToggle(secChecks,"Death Check",Config.Aimbot.DeathCheck,2,function(v) Config.Aimbot.DeathCheck=v end)
-addToggle(secChecks,"Ragdoll Check",Config.Aimbot.RagdollCheck,3,function(v) Config.Aimbot.RagdollCheck=v end)
-addSlider(secChecks,"Min Height Diff",-10,0,Config.Aimbot.MinTargetHeight,0.5,4,function(v) Config.Aimbot.MinTargetHeight=v end)
-local wallLbl=addStatus(secChecks,"Wall: -",5)
-local deathLbl=addStatus(secChecks,"Death: -",6)
+addToggle(secChecks,"Team Check",Config.Aimbot.TeamCheck,1,function(v) Config.Aimbot.TeamCheck=v end)
+addToggle(secChecks,"Wall Check (search)",Config.Aimbot.WallCheck,2,function(v) Config.Aimbot.WallCheck=v end)
+addToggle(secChecks,"Death Check",Config.Aimbot.DeathCheck,3,function(v) Config.Aimbot.DeathCheck=v end)
+addToggle(secChecks,"Ragdoll Check",Config.Aimbot.RagdollCheck,4,function(v) Config.Aimbot.RagdollCheck=v end)
+addSlider(secChecks,"Min Height Diff",-10,0,Config.Aimbot.MinTargetHeight,0.5,5,function(v) Config.Aimbot.MinTargetHeight=v end)
+local teamLbl=addStatus(secChecks,"Team: -",6)
+local wallLbl=addStatus(secChecks,"Wall: -",7)
+local deathLbl=addStatus(secChecks,"Death: -",8)
 
 local secPred=addSection(tabAim,"Prediction",3)
 addToggle(secPred,"Auto Prediction",Config.Aimbot.AutoPrediction,1,function(v) Config.Aimbot.AutoPrediction=v end)
@@ -821,6 +823,11 @@ addSlider(secMCfg,"Animation Speed",0.1,1.0,Config.Menu.AnimSpeed,0.05,2,functio
 
 local secHelp=addSection(tabCfg,"Bind Modes",2)
 for i,txt in ipairs({"RMB on bind → mode popup","⚡ Always","✊ Hold","👆 Press","LMB → rebind"}) do addStatus(secHelp,txt,i) end
+
+local secWallInfo=addSection(tabCfg,"Wall Check Info",3)
+addStatus(secWallInfo,"Wall check only applies when",1)
+addStatus(secWallInfo,"SEARCHING for new targets.",2)
+addStatus(secWallInfo,"Once locked, stays through walls!",3)
 
 -- MISC TAB
 local secPresets=addSection(tabMisc,"Theme Presets",1)
@@ -921,31 +928,17 @@ local function hideWM() if wmTweening then return end;wmTweening=true
     tw(WM,{BackgroundTransparency=1},0.2);tw(wmScale,{Scale=0.9},0.2,function() WM.Visible=false;wmTweening=false end) end
 
 --================================================================--
--- GET CLOSEST (WITH WALL CHECK) --
+-- GET CLOSEST (WITH WALL CHECK FOR SEARCH) --
 --================================================================--
 local function getClosest()
     local best,bestD=nil,Config.Aimbot.FOVRadius
     local mp=UIS:GetMouseLocation()
     
     for _,plr in ipairs(Players:GetPlayers()) do
-        if plr~=LP and isAlive(plr) then
+        if plr~=LP and isValidTargetForSearch(plr) then
             local ch=plr.Character
-            
-            -- Skip dead targets immediately
-            if isDead(ch) then continue end
-            
-            -- Skip ragdolled
-            if Config.Aimbot.RagdollCheck and isRagdolled(ch) then continue end
-            
-            -- Skip falling bodies
-            local myChar = LP.Character
-            if myChar and isFalling(ch, myChar) then continue end
-            
             local part=ch:FindFirstChild(Config.Aimbot.HitPart) or ch:FindFirstChild("Head")
             if part then
-                -- Wall check
-                if Config.Aimbot.WallCheck and not isVisible(part, ch) then continue end
-                
                 local sp,vis=Camera:WorldToViewportPoint(part.Position)
                 if vis then 
                     local d=(Vector2.new(sp.X,sp.Y)-mp).Magnitude
@@ -965,9 +958,21 @@ UIS.InputBegan:Connect(function(input,gpe)
     if matchBind(input,Config.Menu.Bind,Config.Menu.BindIsKB) then toggleMenu();return end
     if matchBind(input,Config.Aimbot.Bind,Config.Aimbot.BindIsKB) then
         local m=Config.Aimbot.BindMode
-        if m=="Hold" then State.AimHold=true;if Config.Aimbot.Enabled then State.LockedTarget=getClosest() end
-        elseif m=="Press" then State.AimPressed=not State.AimPressed
-            if State.AimPressed and Config.Aimbot.Enabled then State.LockedTarget=getClosest() else State.LockedTarget=nil end end
+        if m=="Hold" then 
+            State.AimHold=true
+            if Config.Aimbot.Enabled then 
+                State.LockedTarget=getClosest()
+                State.TargetBehindWall=false
+            end
+        elseif m=="Press" then 
+            State.AimPressed=not State.AimPressed
+            if State.AimPressed and Config.Aimbot.Enabled then 
+                State.LockedTarget=getClosest()
+                State.TargetBehindWall=false
+            else 
+                State.LockedTarget=nil 
+            end 
+        end
     end
     if matchBind(input,Config.Speed.Bind,Config.Speed.BindIsKB) then
         if Config.Speed.BindMode=="Hold" then State.SpeedHold=true end
@@ -977,9 +982,15 @@ end)
 
 UIS.InputEnded:Connect(function(input)
     if matchBind(input,Config.Aimbot.Bind,Config.Aimbot.BindIsKB) then
-        if Config.Aimbot.BindMode=="Hold" then State.AimHold=false;State.LockedTarget=nil end end
+        if Config.Aimbot.BindMode=="Hold" then 
+            State.AimHold=false
+            State.LockedTarget=nil
+            State.TargetBehindWall=false
+        end 
+    end
     if matchBind(input,Config.Speed.Bind,Config.Speed.BindIsKB) then
-        if Config.Speed.BindMode=="Hold" then State.SpeedHold=false end end
+        if Config.Speed.BindMode=="Hold" then State.SpeedHold=false end 
+    end
 end)
 
 --================================================================--
@@ -1004,7 +1015,7 @@ task.spawn(function()
     RS.RenderStepped:Connect(function() frames=frames+1 end)
     while task.wait(0.5) do
         local now=tick();local fps=math.floor(frames/(now-last));frames=0;last=now
-        wmLabel.Text=string.format("marktape.cc | v8.2 | %dfps | %dms | %s",fps,getPing(),os.date("%H:%M:%S"))
+        wmLabel.Text=string.format("marktape.cc | v8.3 | %dfps | %dms | %s",fps,getPing(),os.date("%H:%M:%S"))
     end
 end)
 
@@ -1058,48 +1069,43 @@ RS.RenderStepped:Connect(function(dt)
 
     local target=State.LockedTarget
     
-    -- IMPROVED: Instant target drop if dead/behind wall
+    -- Validate locked target (NO wall check - keeps through walls)
     if target then
-        local ch = target.Character
-        if ch then
-            -- Instant death check
-            if isDead(ch) then
-                State.LockedTarget = nil
-                target = nil
-            -- Wall check
-            elseif Config.Aimbot.WallCheck then
-                local part = ch:FindFirstChild(Config.Aimbot.HitPart) or ch:FindFirstChild("Head")
-                if part and not isVisible(part, ch) then
-                    State.LockedTarget = nil
-                    target = nil
-                end
-            -- Height check (falling body)
-            elseif LP.Character and isFalling(ch, LP.Character) then
-                State.LockedTarget = nil
-                target = nil
-            end
-        else
+        if not isValidTargetForLock(target) then
+            -- Target died, ragdolled, or became teammate - drop lock
             State.LockedTarget = nil
             target = nil
+            State.TargetBehindWall = false
+        else
+            -- Check if behind wall (for display only, don't drop target)
+            local ch = target.Character
+            if ch then
+                local part = ch:FindFirstChild(Config.Aimbot.HitPart) or ch:FindFirstChild("Head")
+                if part then
+                    State.TargetBehindWall = Config.Aimbot.WallCheck and not isVisible(part, ch)
+                    if not State.TargetBehindWall then
+                        State.LastVisiblePos = part.Position
+                    end
+                end
+            end
         end
     end
     
-    -- Find new target if in Always mode
-    if aimActive and Config.Aimbot.BindMode=="Always" and (not target or not isAlive(target)) then
-        State.LockedTarget=getClosest();target=State.LockedTarget 
+    -- Find new target if in Always mode and no current target
+    if aimActive and Config.Aimbot.BindMode=="Always" and not target then
+        State.LockedTarget=getClosest()
+        target=State.LockedTarget
+        State.TargetBehindWall=false
     end
     
     if not aimActive then 
         if State.LockedTarget then State.LockedTarget=nil end
         target=nil 
-    end
-    
-    if target and not isAlive(target) then 
-        State.LockedTarget=nil;target=nil
-        if aimActive then State.LockedTarget=getClosest();target=State.LockedTarget end 
+        State.TargetBehindWall=false
     end
 
     -- Update status labels
+    local teamStatus = Config.Aimbot.TeamCheck and "ON" or "OFF"
     local wallStatus = Config.Aimbot.WallCheck and "ON" or "OFF"
     local deathStatus = Config.Aimbot.DeathCheck and "ON" or "OFF"
     
@@ -1107,18 +1113,31 @@ RS.RenderStepped:Connect(function(dt)
         local ch = target.Character
         local part = ch and (ch:FindFirstChild(Config.Aimbot.HitPart) or ch:FindFirstChild("Head"))
         
-        if ch and part then
-            local behindWall = Config.Aimbot.WallCheck and not isVisible(part, ch)
-            local dead = isDead(ch)
-            
-            wallLbl.Text = "Wall: " .. (behindWall and "⚠ BLOCKED" or "✓ Visible")
-            wallLbl.TextColor3 = behindWall and T.red or T.green
-            
-            deathLbl.Text = "Death: " .. (dead and "☠ DEAD" or "✓ Alive")
-            deathLbl.TextColor3 = dead and T.red or T.green
+        -- Team info
+        local teamName, teamColor = getTeamInfo(target)
+        teamLbl.Text = "Team: " .. (isEnemy(target) and "Enemy" or "Teammate!")
+        teamLbl.TextColor3 = isEnemy(target) and T.green or T.blue
+        
+        -- Wall status
+        if State.TargetBehindWall then
+            wallLbl.Text = "Wall: ⚠ Behind wall (tracking)"
+            wallLbl.TextColor3 = T.orange
+        else
+            wallLbl.Text = "Wall: ✓ Visible"
+            wallLbl.TextColor3 = T.green
         end
         
-        if not canAimAt(target) then
+        -- Death status
+        local dead = ch and isDead(ch)
+        deathLbl.Text = "Death: " .. (dead and "☠ DEAD" or "✓ Alive")
+        deathLbl.TextColor3 = dead and T.red or T.green
+        
+        -- Main lock label
+        if State.TargetBehindWall then
+            lockLbl.Text="Target: "..target.Name.." (wall)"
+            lockLbl.TextColor3=T.orange
+            ragLbl.Text="⚠ Behind wall";ragLbl.TextColor3=T.orange
+        elseif not canCurrentlyAim(target) then
             lockLbl.Text="Target: "..target.Name.." (blocked)"
             lockLbl.TextColor3=T.orange
             ragLbl.Text="⚠ Waiting...";ragLbl.TextColor3=T.yellow
@@ -1131,7 +1150,9 @@ RS.RenderStepped:Connect(function(dt)
         lockLbl.Text=aimActive and "Searching..." or "Target: None"
         lockLbl.TextColor3=aimActive and T.yellow or T.dim
         ragLbl.Text=""
-        wallLbl.Text = "Wall: " .. wallStatus
+        teamLbl.Text = "Team: " .. teamStatus
+        teamLbl.TextColor3 = T.dim
+        wallLbl.Text = "Wall: " .. wallStatus .. " (search only)"
         wallLbl.TextColor3 = T.dim
         deathLbl.Text = "Death: " .. deathStatus
         deathLbl.TextColor3 = T.dim
@@ -1144,8 +1165,8 @@ RS.RenderStepped:Connect(function(dt)
     spdLbl.Text=spdOn and("ON x"..string.format("%.2f",Config.Speed.Value).." ["..Config.Speed.BindMode.."]") or("OFF ["..Config.Speed.BindMode.."]")
     spdLbl.TextColor3=spdOn and T.green or T.dim
 
-    -- Drawing visuals - only show if target is valid
-    local showVisuals = target and canAimAt(target) and aimActive and Config.Aimbot.Enabled
+    -- Drawing visuals
+    local showVisuals = target and aimActive and Config.Aimbot.Enabled
     if LockLine then
         if showVisuals then 
             local ch=target.Character
@@ -1155,9 +1176,12 @@ RS.RenderStepped:Connect(function(dt)
                 if vis then 
                     LockLine.From=Vector2.new(mp.X,mp.Y)
                     LockLine.To=Vector2.new(sp.X,sp.Y)
+                    -- Change color based on wall status
+                    LockLine.Color = State.TargetBehindWall and T.orange or T.green
                     LockLine.Visible=true
                     if LockCircle then 
                         LockCircle.Position=Vector2.new(sp.X,sp.Y)
+                        LockCircle.Color = State.TargetBehindWall and T.orange or T.green
                         LockCircle.Visible=true 
                     end
                 else 
@@ -1174,8 +1198,8 @@ RS.RenderStepped:Connect(function(dt)
         end
     end
 
-    -- AIMBOT - only aim if target passes all checks
-    if aimActive and target and canAimAt(target) and isAlive(LP) then
+    -- AIMBOT - aim even through walls (no wall check here)
+    if aimActive and target and canCurrentlyAim(target) and isAlive(LP) then
         local ch=target.Character
         local part=ch:FindFirstChild(Config.Aimbot.HitPart) or ch:FindFirstChild("Head")
         if part then 
@@ -1219,14 +1243,15 @@ RS.RenderStepped:Connect(function(dt)
     BindList.Visible=Config.Misc.ShowBindList
     blAimbot.Frame.Visible=Config.Aimbot.Enabled
     if Config.Aimbot.Enabled then
-        blAimbot.Dot.BackgroundColor3=aimActive and T.green or T.dim
+        blAimbot.Dot.BackgroundColor3=aimActive and (State.TargetBehindWall and T.orange or T.green) or T.dim
         local bm=Config.Aimbot.BindMode
         blAimbot.Mode.Text=bm=="Always" and "Always" or keyName(Config.Aimbot.Bind,Config.Aimbot.BindIsKB).." · "..bm
         blAimbot.Mode.TextColor3=aimActive and ModeColors[bm] or T.dim
         if aimActive and target then 
             blAimSub.Visible=true
-            blAimSub.Text="   → "..target.Name
-            blAimSub.TextColor3=canAimAt(target) and T.green or T.orange
+            local status = State.TargetBehindWall and " (wall)" or ""
+            blAimSub.Text="   → "..target.Name..status
+            blAimSub.TextColor3=State.TargetBehindWall and T.orange or (canCurrentlyAim(target) and T.green or T.yellow)
         else blAimSub.Visible=false end
     else blAimSub.Visible=false end
 
@@ -1259,4 +1284,4 @@ RS.Heartbeat:Connect(function()
     end
 end)
 
-print("[MARKTAPE] Da Strike v8.2 loaded — Wall Check + Death Fix")
+print("[MARKTAPE] Da Strike v8.3 loaded — Team Check + Smart Wall Check")
