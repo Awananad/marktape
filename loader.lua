@@ -150,6 +150,20 @@ task.spawn(function() task.wait(0.5);State.BaseFOV=Camera.FieldOfView end)
 --================================================================--
 --                      SCREEN GUI                                --
 --================================================================--
+--================================================================--
+--              ЗАМЕНИ ОТ "SCREEN GUI" ДО "HEADER"                --
+--================================================================--
+
+local Gui=make("ScreenGui",{
+    Name="MT_v8",
+    ZIndexBehavior=Enum.ZIndexBehavior.Sibling,
+    ResetOnSpawn=false,
+    IgnoreGuiInset=true,
+})
+pcall(function() Gui.Parent=game:GetService("CoreGui") end)
+if not Gui.Parent then Gui.Parent=LP:WaitForChild("PlayerGui") end
+
+-- Используем Frame вместо CanvasGroup (анти-блюр)
 local MenuContainer=make("Frame",{
     Size=UDim2.new(1,0,1,0),
     BackgroundTransparency=1,
@@ -162,29 +176,92 @@ local Main=make("Frame",{
     Position=UDim2.new(0.5,0,0.5,0),
     BackgroundColor3=T.bg,
     BorderSizePixel=0,
-    ClipsDescendants=true,
     Parent=MenuContainer,
 })
 make("UICorner",{CornerRadius=UDim.new(0,6),Parent=Main});tl(Main,"BackgroundColor3","bg")
 local mainStroke=make("UIStroke",{Color=T.border,Thickness=1,Parent=Main});tl(mainStroke,"Color","border")
+
+-- UIScale для анимации, но ВСЕГДА snap к 1.0 после завершения
 local MainScale=make("UIScale",{Scale=1,Parent=Main})
+
+--================================================================--
+--     РАБОЧИЕ АНИМАЦИИ (Frame-совместимые, без blur)             --
+--================================================================--
+
+-- Собираем все элементы которые нужно фейдить
+local fadeElements = {} -- заполнится после создания UI
+
+local function collectFadeElements()
+    fadeElements = {}
+    local function scan(parent)
+        for _, child in ipairs(parent:GetDescendants()) do
+            if child:IsA("Frame") and child.BackgroundTransparency < 1 then
+                table.insert(fadeElements, {obj=child, prop="BackgroundTransparency", base=child.BackgroundTransparency})
+            end
+            if child:IsA("TextLabel") or child:IsA("TextButton") then
+                table.insert(fadeElements, {obj=child, prop="TextTransparency", base=child.TextTransparency})
+                if child.BackgroundTransparency < 1 then
+                    table.insert(fadeElements, {obj=child, prop="BackgroundTransparency", base=child.BackgroundTransparency})
+                end
+            end
+            if child:IsA("UIStroke") then
+                table.insert(fadeElements, {obj=child, prop="Transparency", base=child.Transparency})
+            end
+            if child:IsA("ScrollingFrame") then
+                table.insert(fadeElements, {obj=child, prop="ScrollBarImageTransparency", base=child.ScrollBarImageTransparency})
+            end
+        end
+    end
+    scan(Main)
+end
+
+local function setFade(alpha)
+    for _, e in ipairs(fadeElements) do
+        pcall(function()
+            -- alpha 1 = fully visible, 0 = invisible
+            local baseT = e.base
+            e.obj[e.prop] = baseT + (1 - baseT) * (1 - alpha)
+        end)
+    end
+end
 
 local function animOpen()
     if State.MenuTweening then return end
-    State.MenuTweening=true; State.MenuOpen=true
-    MenuContainer.Visible=true
-    MainScale.Scale=0.85
+    State.MenuTweening = true
+    State.MenuOpen = true
+    MenuContainer.Visible = true
 
-    local startTime=tick()
-    local duration=Config.Menu.AnimSpeed
+    -- Собираем элементы для фейда (один раз)
+    if #fadeElements == 0 then
+        collectFadeElements()
+    end
+
+    -- Начальное состояние
+    MainScale.Scale = 0.92
+    setFade(0)
+
+    -- Анимация через RenderStep для плавности
+    local startTime = tick()
+    local duration = Config.Menu.AnimSpeed
     local conn
-    conn=RS.RenderStepped:Connect(function()
-        local t=math.clamp((tick()-startTime)/duration,0,1)
-        local e=1-math.pow(1-t,4) -- Quart out
-        MainScale.Scale=0.85+0.15*e
-        if t>=1 then
-            MainScale.Scale=1 -- EXACT 1 = no blur
-            State.MenuTweening=false
+
+    conn = RS.RenderStepped:Connect(function()
+        local elapsed = tick() - startTime
+        local progress = math.clamp(elapsed / duration, 0, 1)
+
+        -- Easing (Quart Out)
+        local eased = 1 - math.pow(1 - progress, 4)
+
+        -- Scale: 0.92 → 1.0
+        MainScale.Scale = 0.92 + 0.08 * eased
+
+        -- Fade: 0 → 1
+        setFade(eased)
+
+        if progress >= 1 then
+            MainScale.Scale = 1  -- SNAP to exactly 1 (anti-blur!)
+            setFade(1)
+            State.MenuTweening = false
             conn:Disconnect()
         end
     end)
@@ -192,19 +269,35 @@ end
 
 local function animClose()
     if State.MenuTweening then return end
-    State.MenuTweening=true; State.MenuOpen=false
+    State.MenuTweening = true
+    State.MenuOpen = false
 
-    local startTime=tick()
-    local duration=Config.Menu.AnimSpeed
+    if #fadeElements == 0 then
+        collectFadeElements()
+    end
+
+    local startTime = tick()
+    local duration = Config.Menu.AnimSpeed
     local conn
-    conn=RS.RenderStepped:Connect(function()
-        local t=math.clamp((tick()-startTime)/duration,0,1)
-        local e=1-math.pow(1-t,4)
-        MainScale.Scale=1-0.15*e
-        if t>=1 then
-            MenuContainer.Visible=false
-            MainScale.Scale=1 -- Reset
-            State.MenuTweening=false
+
+    conn = RS.RenderStepped:Connect(function()
+        local elapsed = tick() - startTime
+        local progress = math.clamp(elapsed / duration, 0, 1)
+
+        -- Easing (Quart Out)
+        local eased = 1 - math.pow(1 - progress, 4)
+
+        -- Scale: 1.0 → 0.92
+        MainScale.Scale = 1 - 0.08 * eased
+
+        -- Fade: 1 → 0
+        setFade(1 - eased)
+
+        if progress >= 1 then
+            MenuContainer.Visible = false
+            MainScale.Scale = 1  -- Reset to 1 when hidden
+            setFade(1)           -- Reset transparencies
+            State.MenuTweening = false
             conn:Disconnect()
         end
     end)
