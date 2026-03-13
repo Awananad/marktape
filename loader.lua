@@ -5,7 +5,7 @@
     ██╔══██║██╔══██║██╔══██╗██╔═██╗    ██║   ██╔══██║██╔═══╝ ██╔══╝
     ██║  ██║██║  ██║██║  ██║██║  ██╗   ██║   ██║  ██║██║     ███████╗
     ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝╚═╝     ╚══════╝
-    Da Strike v8 — Precise Speed / Clean Camera
+    Da Strike v8.1 — Anti-Blur Fix
 ]]
 local Players=game:GetService("Players")
 local RS=game:GetService("RunService")
@@ -148,78 +148,108 @@ end
 task.spawn(function() task.wait(0.5);State.BaseFOV=Camera.FieldOfView end)
 
 --================================================================--
---                      SCREEN GUI                                --
+--                SCREEN GUI + MENU (ANTI-BLUR)                   --
 --================================================================--
---================================================================--
-local Gui=make("ScreenGui",{Name="MT_v8",ZIndexBehavior=Enum.ZIndexBehavior.Sibling,ResetOnSpawn=false,IgnoreGuiInset=true})
+local Gui=make("ScreenGui",{
+    Name="MT_v81",
+    ZIndexBehavior=Enum.ZIndexBehavior.Sibling,
+    ResetOnSpawn=false,
+    IgnoreGuiInset=true,
+})
 pcall(function() Gui.Parent=game:GetService("CoreGui") end)
 if not Gui.Parent then Gui.Parent=LP:WaitForChild("PlayerGui") end
 
-local MenuContainer=make("Frame",{Size=UDim2.new(1,0,1,0),BackgroundTransparency=1,Parent=Gui})
+-- Frame вместо CanvasGroup = без блюра
+local MenuContainer=make("Frame",{
+    Size=UDim2.new(1,0,1,0),
+    BackgroundTransparency=1,
+    Parent=Gui,
+})
 
-local Main=make("Frame",{AnchorPoint=Vector2.new(0.5,0.5),Size=UDim2.new(0,580,0,580),
-    Position=UDim2.new(0.5,0,0.5,0),BackgroundColor3=T.bg,BorderSizePixel=0,ClipsDescendants=true,Parent=MenuContainer})
-make("UICorner",{CornerRadius=UDim.new(0,6),Parent=Main});tl(Main,"BackgroundColor3","bg")
-local mainStroke=make("UIStroke",{Color=T.border,Thickness=1,Parent=Main});tl(mainStroke,"Color","border")
+local Main=make("Frame",{
+    AnchorPoint=Vector2.new(0.5,0.5),
+    Size=UDim2.new(0,580,0,580),
+    Position=UDim2.new(0.5,0,0.5,0),
+    BackgroundColor3=T.bg,
+    BorderSizePixel=0,
+    Parent=MenuContainer,
+})
+make("UICorner",{CornerRadius=UDim.new(0,6),Parent=Main})
+tl(Main,"BackgroundColor3","bg")
+local mainStroke=make("UIStroke",{Color=T.border,Thickness=1,Parent=Main})
+tl(mainStroke,"Color","border")
 local MainScale=make("UIScale",{Scale=1,Parent=Main})
+
+--================================================================--
+--              MENU ANIMATION (простая, рабочая)                 --
+--================================================================--
+local animConn = nil
 
 local function animOpen()
     if State.MenuTweening then return end
-    State.MenuTweening=true; State.MenuOpen=true
+    State.MenuTweening=true
+    State.MenuOpen=true
+
+    -- Отключаем старую анимацию если есть
+    if animConn then pcall(function() animConn:Disconnect() end) end
+
     MenuContainer.Visible=true
     MainScale.Scale=0.85
-    Main.BackgroundTransparency=1
-    mainStroke.Transparency=1
 
-    local startTime=tick()
-    local duration=Config.Menu.AnimSpeed
-    local conn
-    conn=RS.RenderStepped:Connect(function()
-        local t=math.clamp((tick()-startTime)/duration,0,1)
-        local e=1-math.pow(1-t,4)
+    local t0=tick()
+    local dur=Config.Menu.AnimSpeed
+
+    animConn=RS.RenderStepped:Connect(function()
+        local prog=math.clamp((tick()-t0)/dur,0,1)
+        local e=1-(1-prog)^4 -- Quart Out
 
         MainScale.Scale=0.85+0.15*e
-        Main.BackgroundTransparency=1-((Config.Misc.MenuOpacity)*e)
-        mainStroke.Transparency=1-e
 
-        if t>=1 then
-            MainScale.Scale=1
-            Main.BackgroundTransparency=1-Config.Misc.MenuOpacity
-            mainStroke.Transparency=0
+        if prog>=1 then
+            MainScale.Scale=1 -- SNAP ровно 1 = без блюра
             State.MenuTweening=false
-            conn:Disconnect()
+            if animConn then animConn:Disconnect(); animConn=nil end
         end
     end)
 end
 
 local function animClose()
     if State.MenuTweening then return end
-    State.MenuTweening=true; State.MenuOpen=false
+    State.MenuTweening=true
+    State.MenuOpen=false
 
-    local startTime=tick()
-    local duration=Config.Menu.AnimSpeed
-    local conn
-    conn=RS.RenderStepped:Connect(function()
-        local t=math.clamp((tick()-startTime)/duration,0,1)
-        local e=1-math.pow(1-t,4)
+    if animConn then pcall(function() animConn:Disconnect() end) end
+
+    local t0=tick()
+    local dur=Config.Menu.AnimSpeed
+
+    animConn=RS.RenderStepped:Connect(function()
+        local prog=math.clamp((tick()-t0)/dur,0,1)
+        local e=1-(1-prog)^4
 
         MainScale.Scale=1-0.15*e
-        Main.BackgroundTransparency=(1-Config.Misc.MenuOpacity)+(Config.Misc.MenuOpacity*e)
-        mainStroke.Transparency=e
 
-        if t>=1 then
+        if prog>=1 then
             MenuContainer.Visible=false
-            MainScale.Scale=1
-            Main.BackgroundTransparency=1-Config.Misc.MenuOpacity
-            mainStroke.Transparency=0
+            MainScale.Scale=1 -- Reset
             State.MenuTweening=false
-            conn:Disconnect()
+            if animConn then animConn:Disconnect(); animConn=nil end
         end
     end)
 end
 
-local function toggleMenu() if State.MenuOpen then animClose() else animOpen() end end
+local function toggleMenu()
+    if State.MenuTweening then return end
+    if State.MenuOpen then
+        animClose()
+    else
+        animOpen()
+    end
+end
 
+--================================================================--
+--                        HEADER                                  --
+--================================================================--
 local Header=make("Frame",{Size=UDim2.new(1,0,0,36),BackgroundColor3=T.bg2,BorderSizePixel=0,Parent=Main})
 tl(Header,"BackgroundColor3","bg2")
 make("UICorner",{CornerRadius=UDim.new(0,6),Parent=Header})
@@ -227,18 +257,21 @@ local hP=make("Frame",{Size=UDim2.new(1,0,0,8),Position=UDim2.new(0,0,1,-8),Back
 tl(hP,"BackgroundColor3","bg2")
 local hTitle=make("TextLabel",{Size=UDim2.new(0,100,1,0),Position=UDim2.new(0,14,0,0),BackgroundTransparency=1,
     Text="MARKTAPE",TextColor3=T.accent,Font=Enum.Font.GothamBold,TextSize=14,
-    TextXAlignment=Enum.TextXAlignment.Left,Parent=Header});tl(hTitle,"TextColor3","accent")
+    TextXAlignment=Enum.TextXAlignment.Left,Parent=Header})
+tl(hTitle,"TextColor3","accent")
 make("TextLabel",{Size=UDim2.new(0,150,1,0),Position=UDim2.new(0,108,0,0),BackgroundTransparency=1,
-    Text="| Da Strike v8",TextColor3=T.dim,Font=Enum.Font.Gotham,TextSize=12,
+    Text="| Da Strike v8.1",TextColor3=T.dim,Font=Enum.Font.Gotham,TextSize=12,
     TextXAlignment=Enum.TextXAlignment.Left,Parent=Header})
 local CloseBtn=make("TextButton",{Size=UDim2.new(0,36,0,36),Position=UDim2.new(1,-36,0,0),
     BackgroundTransparency=1,Text="×",TextColor3=T.dim,Font=Enum.Font.GothamBold,TextSize=20,Parent=Header})
 CloseBtn.MouseEnter:Connect(function() tw(CloseBtn,{TextColor3=T.accent},0.15) end)
 CloseBtn.MouseLeave:Connect(function() tw(CloseBtn,{TextColor3=T.dim},0.15) end)
-CloseBtn.MouseButton1Click:Connect(animClose)
+CloseBtn.MouseButton1Click:Connect(function() animClose() end)
 local accentLine=make("Frame",{Size=UDim2.new(1,0,0,2),Position=UDim2.new(0,0,0,36),
-    BackgroundColor3=T.accent,BorderSizePixel=0,Parent=Main});tl(accentLine,"BackgroundColor3","accent")
+    BackgroundColor3=T.accent,BorderSizePixel=0,Parent=Main})
+tl(accentLine,"BackgroundColor3","accent")
 
+-- Drag
 do local dr,dS,sP
     Header.InputBegan:Connect(function(i) if i.UserInputType==Enum.UserInputType.MouseButton1 then dr=true;dS=i.Position;sP=Main.Position end end)
     Header.InputEnded:Connect(function(i) if i.UserInputType==Enum.UserInputType.MouseButton1 then dr=false end end)
@@ -246,6 +279,9 @@ do local dr,dS,sP
         local d=i.Position-dS;Main.Position=UDim2.new(sP.X.Scale,sP.X.Offset+d.X,sP.Y.Scale,sP.Y.Offset+d.Y) end end)
 end
 
+--================================================================--
+--                         TABS                                   --
+--================================================================--
 local TabBar=make("Frame",{Size=UDim2.new(1,0,0,32),Position=UDim2.new(0,0,0,38),BackgroundColor3=T.bg2,BorderSizePixel=0,Parent=Main})
 tl(TabBar,"BackgroundColor3","bg2")
 local ContentArea=make("Frame",{Size=UDim2.new(1,-20,1,-80),Position=UDim2.new(0,10,0,74),
@@ -269,7 +305,10 @@ local function addTab(name,order)
         content.Visible=true;ind.Visible=true;tw(btn,{TextColor3=T.text},0.15)
     end);return content
 end
--- Bind Mode Popup
+
+--================================================================--
+--                  BIND MODE POPUP                               --
+--================================================================--
 local activePopupCB,popupJust=nil,false
 local BindPopup=make("Frame",{Size=UDim2.new(0,120,0,0),AutomaticSize=Enum.AutomaticSize.Y,
     BackgroundColor3=T.bg,BorderSizePixel=0,Visible=false,ZIndex=10,Parent=Gui})
@@ -502,20 +541,18 @@ end
 --================================================================--
 --                      BUILD TABS                                --
 --================================================================--
-local tabAim  = addTab("AIMBOT",   1)
-local tabMove = addTab("MOVEMENT", 2)
-local tabCfg  = addTab("CONFIG",   3)
-local tabMisc = addTab("MISC",     4)
+local tabAim=addTab("AIMBOT",1)
+local tabMove=addTab("MOVEMENT",2)
+local tabCfg=addTab("CONFIG",3)
+local tabMisc=addTab("MISC",4)
 allTabs[1].Content.Visible=true;allTabs[1].Ind.Visible=true;allTabs[1].Btn.TextColor3=T.text
 
--- AIMBOT
 local secAim=addSection(tabAim,"Aimbot",1)
 addToggle(secAim,"Enable",Config.Aimbot.Enabled,1,function(v) Config.Aimbot.Enabled=v end)
 addKeybind(secAim,"Bind",Config.Aimbot.Bind,Config.Aimbot.BindIsKB,Config.Aimbot.BindMode,2,
     function(k,kb) Config.Aimbot.Bind=k;Config.Aimbot.BindIsKB=kb end,
     function(m) Config.Aimbot.BindMode=m end)
-addDropdown(secAim,"Hit Part",
-    {"Head","HumanoidRootPart","UpperTorso","LowerTorso","Torso","LeftUpperArm","RightUpperArm"},
+addDropdown(secAim,"Hit Part",{"Head","HumanoidRootPart","UpperTorso","LowerTorso","Torso","LeftUpperArm","RightUpperArm"},
     Config.Aimbot.HitPart,3,function(v) Config.Aimbot.HitPart=v end)
 addSlider(secAim,"Smooth",1,20,Config.Aimbot.Smooth,0.5,4,function(v) Config.Aimbot.Smooth=v end)
 
@@ -537,31 +574,21 @@ local lockLbl=addStatus(secLock,"Target: None",1)
 local ragLbl=addStatus(secLock,"",2)
 local modeLbl=addStatus(secLock,"Mode: Hold",3)
 
--- MOVEMENT
 local secSpd=addSection(tabMove,"CFrame Speed",1)
 addToggle(secSpd,"Enable",Config.Speed.Enabled,1,function(v)
     Config.Speed.Enabled=v;if not v then State.SpeedHold=false;State.SpeedPressed=false end end)
 addKeybind(secSpd,"Bind",Config.Speed.Bind,Config.Speed.BindIsKB,Config.Speed.BindMode,2,
     function(k,kb) Config.Speed.Bind=k;Config.Speed.BindIsKB=kb end,
     function(m) Config.Speed.BindMode=m end)
-
--- ★ Speed: 0.01 → 1.00, step 0.01
 addSlider(secSpd,"Speed",0.01,1,Config.Speed.Value,0.01,3,function(v) Config.Speed.Value=v end)
-
 local spdLbl=addStatus(secSpd,"Status: OFF",4)
-addStatus(secSpd,"Range: 0.01 – 1.00 (precise control)",5)
 
--- Camera Effects
 local secCam=addSection(tabMove,"Camera Effects",2)
 addSlider(secCam,"Camera Lag",0,8,Config.Speed.CamLag,0.5,1,function(v) Config.Speed.CamLag=v end)
 addSlider(secCam,"FOV Boost",0,40,Config.Speed.CamFOV,1,2,function(v) Config.Speed.CamFOV=v end)
 addSlider(secCam,"Camera Tilt",0,12,Config.Speed.CamTilt,0.5,3,function(v) Config.Speed.CamTilt=v end)
 addSlider(secCam,"Cam Smooth",0.02,0.2,Config.Speed.CamSmooth,0.01,4,function(v) Config.Speed.CamSmooth=v end)
-addStatus(secCam,"Camera stays behind while model runs ahead",5)
-addStatus(secCam,"FOV widens during sprint for motion feel",6)
-addStatus(secCam,"Tilt adds roll when strafing sideways",7)
 
--- CONFIG
 local secMCfg=addSection(tabCfg,"Menu Settings",1)
 addKeybindSimple(secMCfg,"Menu Toggle Bind",Config.Menu.Bind,Config.Menu.BindIsKB,1,function(k,kb)
     Config.Menu.Bind=k;Config.Menu.BindIsKB=kb end)
@@ -570,20 +597,17 @@ addSlider(secMCfg,"Animation Speed",0.1,1.0,Config.Menu.AnimSpeed,0.05,2,functio
 local secHelp=addSection(tabCfg,"Bind Modes",2)
 for i,txt in ipairs({"RMB on bind → mode popup","⚡ Always","✊ Hold","👆 Press","LMB → rebind"}) do addStatus(secHelp,txt,i) end
 
--- MISC
 local secPresets=addSection(tabMisc,"Theme Presets",1)
 local presetNames={};for _,p in ipairs(Presets) do table.insert(presetNames,p[1]) end
 local accentPicker,bgPicker
 addDropdown(secPresets,"Preset",presetNames,"MarkTape",1,function(v)
-    for _,p in ipairs(Presets) do if p[1]==v then
-        T.accent=p[2];T.bg=p[3];applyTheme()
+    for _,p in ipairs(Presets) do if p[1]==v then T.accent=p[2];T.bg=p[3];applyTheme()
         if accentPicker then accentPicker.SetColor(p[2]) end
         if bgPicker then bgPicker.SetColor(p[3]) end;break end end
 end)
 
 local secAcc=addSection(tabMisc,"Accent Color",2)
 accentPicker=addColorPicker(secAcc,"Accent",T.accent,1,function(c) T.accent=c;applyTheme() end)
-
 local secBGC=addSection(tabMisc,"Background Color",3)
 bgPicker=addColorPicker(secBGC,"Background",T.bg,1,function(c) T.bg=c;applyTheme() end)
 
@@ -620,11 +644,11 @@ local function makeBindEntry(name,order)
     local fr=make("Frame",{Size=UDim2.new(1,0,0,22),BackgroundTransparency=1,LayoutOrder=order,Visible=false,Parent=BindList})
     local dot=make("Frame",{Size=UDim2.new(0,8,0,8),Position=UDim2.new(0,0,0.5,-4),BackgroundColor3=T.dim,BorderSizePixel=0,Parent=fr})
     make("UICorner",{CornerRadius=UDim.new(1,0),Parent=dot})
-    local nL=make("TextLabel",{Size=UDim2.new(0,70,1,0),Position=UDim2.new(0,14,0,0),BackgroundTransparency=1,
+    make("TextLabel",{Size=UDim2.new(0,70,1,0),Position=UDim2.new(0,14,0,0),BackgroundTransparency=1,
         Text=name,TextColor3=T.text,Font=Enum.Font.GothamSemibold,TextSize=10,TextXAlignment=Enum.TextXAlignment.Left,Parent=fr})
     local mL=make("TextLabel",{Size=UDim2.new(0,80,1,0),Position=UDim2.new(1,-80,0,0),BackgroundTransparency=1,
         Text="",TextColor3=T.dim,Font=Enum.Font.Gotham,TextSize=9,TextXAlignment=Enum.TextXAlignment.Right,Parent=fr})
-    return {Frame=fr,Dot=dot,Name=nL,Mode=mL}
+    return {Frame=fr,Dot=dot,Mode=mL}
 end
 
 local blAimbot=makeBindEntry("Aimbot",2)
@@ -644,63 +668,46 @@ do local dr,dS,sP
 end
 
 --================================================================--
---                    DRAWING OBJECTS                              --
+--                    DRAWING                                     --
 --================================================================--
-pcall(function()
-    FOVCircle=Drawing.new("Circle");FOVCircle.Color=T.accent;FOVCircle.Thickness=1.5
-    FOVCircle.NumSides=80;FOVCircle.Filled=false;FOVCircle.Visible=false;FOVCircle.Transparency=0.7
-    FOVCircle.Radius=200;FOVExists=true
-end)
-pcall(function()
-    LockLine=Drawing.new("Line");LockLine.Color=T.green;LockLine.Thickness=1.5;LockLine.Visible=false;LockLine.Transparency=0.6
-end)
-pcall(function()
-    LockCircle=Drawing.new("Circle");LockCircle.Color=T.green;LockCircle.Thickness=2
-    LockCircle.NumSides=40;LockCircle.Filled=false;LockCircle.Visible=false;LockCircle.Transparency=0.5;LockCircle.Radius=18
-end)
+pcall(function() FOVCircle=Drawing.new("Circle");FOVCircle.Color=T.accent;FOVCircle.Thickness=1.5;FOVCircle.NumSides=80;FOVCircle.Filled=false;FOVCircle.Visible=false;FOVCircle.Transparency=0.7;FOVCircle.Radius=200;FOVExists=true end)
+pcall(function() LockLine=Drawing.new("Line");LockLine.Color=T.green;LockLine.Thickness=1.5;LockLine.Visible=false;LockLine.Transparency=0.6 end)
+pcall(function() LockCircle=Drawing.new("Circle");LockCircle.Color=T.green;LockCircle.Thickness=2;LockCircle.NumSides=40;LockCircle.Filled=false;LockCircle.Visible=false;LockCircle.Transparency=0.5;LockCircle.Radius=18 end)
 
 --================================================================--
 --                      WATERMARK                                 --
 --================================================================--
 local wmBasePos=UDim2.new(0,10,0,6)
-local WM=make("Frame",{AnchorPoint=Vector2.new(0,0),Size=UDim2.new(0,380,0,24),
-    Position=wmBasePos,BackgroundColor3=T.bg,BackgroundTransparency=0.2,BorderSizePixel=0,
-    Visible=Config.Misc.ShowWatermark,Parent=Gui})
-tl(WM,"BackgroundColor3","bg")
-make("UICorner",{CornerRadius=UDim.new(0,4),Parent=WM})
+local WM=make("Frame",{AnchorPoint=Vector2.new(0,0),Size=UDim2.new(0,380,0,24),Position=wmBasePos,
+    BackgroundColor3=T.bg,BackgroundTransparency=0.2,BorderSizePixel=0,Visible=Config.Misc.ShowWatermark,Parent=Gui})
+tl(WM,"BackgroundColor3","bg");make("UICorner",{CornerRadius=UDim.new(0,4),Parent=WM})
 local wmStroke=make("UIStroke",{Color=T.accent,Thickness=1,Transparency=0.4,Parent=WM});tl(wmStroke,"Color","accent")
-local wmBar=make("Frame",{Size=UDim2.new(0,3,1,-6),Position=UDim2.new(0,4,0,3),
-    BackgroundColor3=T.accent,BorderSizePixel=0,Parent=WM})
+local wmBar=make("Frame",{Size=UDim2.new(0,3,1,-6),Position=UDim2.new(0,4,0,3),BackgroundColor3=T.accent,BorderSizePixel=0,Parent=WM})
 tl(wmBar,"BackgroundColor3","accent");make("UICorner",{CornerRadius=UDim.new(1,0),Parent=wmBar})
-local wmLabel=make("TextLabel",{Size=UDim2.new(1,-16,1,0),Position=UDim2.new(0,12,0,0),
-    BackgroundTransparency=1,Text="marktape.cc | loading...",
-    TextColor3=T.text,Font=Enum.Font.Gotham,TextSize=11,TextXAlignment=Enum.TextXAlignment.Left,Parent=WM})
+local wmLabel=make("TextLabel",{Size=UDim2.new(1,-16,1,0),Position=UDim2.new(0,12,0,0),BackgroundTransparency=1,
+    Text="marktape.cc | loading...",TextColor3=T.text,Font=Enum.Font.Gotham,TextSize=11,TextXAlignment=Enum.TextXAlignment.Left,Parent=WM})
 local wmScale=make("UIScale",{Scale=1,Parent=WM})
 
 local wmTweening,wmLastVisible=false,Config.Misc.ShowWatermark
-local function showWM()
-    if wmTweening then return end;wmTweening=true;WM.Visible=true;wmScale.Scale=0.9
-    tw(WM,{BackgroundTransparency=0.2},0.2);tw(wmScale,{Scale=1},0.2,function() wmTweening=false end)
-end
-local function hideWM()
-    if wmTweening then return end;wmTweening=true
-    tw(WM,{BackgroundTransparency=1},0.2);tw(wmScale,{Scale=0.9},0.2,function() WM.Visible=false;wmTweening=false end)
-end
+local function showWM() if wmTweening then return end;wmTweening=true;WM.Visible=true;wmScale.Scale=0.9
+    tw(WM,{BackgroundTransparency=0.2},0.2);tw(wmScale,{Scale=1},0.2,function() wmTweening=false end) end
+local function hideWM() if wmTweening then return end;wmTweening=true
+    tw(WM,{BackgroundTransparency=1},0.2);tw(wmScale,{Scale=0.9},0.2,function() WM.Visible=false;wmTweening=false end) end
 
 local function getClosest()
-    local best,bestD=nil,Config.Aimbot.FOVRadius
-    local mp=UIS:GetMouseLocation()
+    local best,bestD=nil,Config.Aimbot.FOVRadius;local mp=UIS:GetMouseLocation()
     for _,plr in ipairs(Players:GetPlayers()) do
-        if plr~=LP and isValidTarget(plr) then
-            local ch=plr.Character;local part=ch:FindFirstChild(Config.Aimbot.HitPart) or ch:FindFirstChild("Head")
+        if plr~=LP and isValidTarget(plr) then local ch=plr.Character
+            local part=ch:FindFirstChild(Config.Aimbot.HitPart) or ch:FindFirstChild("Head")
             if part then local sp,vis=Camera:WorldToViewportPoint(part.Position)
-                if vis then local d=(Vector2.new(sp.X,sp.Y)-mp).Magnitude;if d<bestD then bestD=d;best=plr end end
-            end
+                if vis then local d=(Vector2.new(sp.X,sp.Y)-mp).Magnitude;if d<bestD then bestD=d;best=plr end end end
         end
     end;return best
 end
 
--- Input
+--================================================================--
+--                     INPUT                                      --
+--================================================================--
 UIS.InputBegan:Connect(function(input,gpe)
     if gpe then return end
     if matchBind(input,Config.Menu.Bind,Config.Menu.BindIsKB) then toggleMenu();return end
@@ -711,11 +718,11 @@ UIS.InputBegan:Connect(function(input,gpe)
             if State.AimPressed and Config.Aimbot.Enabled then State.LockedTarget=getClosest() else State.LockedTarget=nil end end
     end
     if matchBind(input,Config.Speed.Bind,Config.Speed.BindIsKB) then
-        local m=Config.Speed.BindMode
-        if m=="Hold" then State.SpeedHold=true end
-        if m=="Press" then State.SpeedPressed=not State.SpeedPressed end
+        if Config.Speed.BindMode=="Hold" then State.SpeedHold=true end
+        if Config.Speed.BindMode=="Press" then State.SpeedPressed=not State.SpeedPressed end
     end
 end)
+
 UIS.InputEnded:Connect(function(input)
     if matchBind(input,Config.Aimbot.Bind,Config.Aimbot.BindIsKB) then
         if Config.Aimbot.BindMode=="Hold" then State.AimHold=false;State.LockedTarget=nil end end
@@ -723,30 +730,32 @@ UIS.InputEnded:Connect(function(input)
         if Config.Speed.BindMode=="Hold" then State.SpeedHold=false end end
 end)
 
--- Auto pred
+--================================================================--
+--                  AUTO PREDICTION                               --
+--================================================================--
 task.spawn(function()
     while task.wait(0.5) do
         if Config.Aimbot.AutoPrediction then
             local px,py=getAutoPred();Config.Aimbot.PredictionX=px;Config.Aimbot.PredictionY=py
-            predXSl.SetValue(px);predYSl.SetValue(py)
-            local ping=getPing()
+            predXSl.SetValue(px);predYSl.SetValue(py);local ping=getPing()
             autoPredLbl.Text=string.format("Auto: %dms → X:%.2f Y:%.2f",ping,px,py)
             autoPredLbl.TextColor3=ping<80 and T.green or ping<150 and T.yellow or T.accent
         else autoPredLbl.Text="Auto: disabled";autoPredLbl.TextColor3=T.dim end
     end
 end)
 
--- WM text
+--================================================================--
+--                  WATERMARK UPDATER                             --
+--================================================================--
 task.spawn(function()
     local frames,last=0,tick()
     RS.RenderStepped:Connect(function() frames=frames+1 end)
     while task.wait(0.5) do
         local now=tick();local fps=math.floor(frames/(now-last));frames=0;last=now
-        wmLabel.Text=string.format("marktape.cc  |  v8  |  %dfps  |  %dms  |  %s",fps,getPing(),os.date("%H:%M:%S"))
+        wmLabel.Text=string.format("marktape.cc  |  v8.1  |  %dfps  |  %dms  |  %s",fps,getPing(),os.date("%H:%M:%S"))
     end
 end)
 
--- WM anim
 local wmAnimTime=0
 RS:BindToRenderStep("WM_Anim",Enum.RenderPriority.Last.Value+1,function(dt)
     if Config.Misc.ShowWatermark~=wmLastVisible then
@@ -790,12 +799,10 @@ RS.RenderStepped:Connect(function(dt)
 
     if State.BaseFOV==0 or State.BaseFOV==nil then State.BaseFOV=Camera.FieldOfView end
 
-    -- FOV circle
     if FOVExists and FOVCircle then
         FOVCircle.Position=Vector2.new(mp.X,mp.Y);FOVCircle.Radius=Config.Aimbot.FOVRadius
         FOVCircle.Visible=Config.Aimbot.Enabled and Config.Aimbot.ShowFOV end
 
-    -- Target
     local target=State.LockedTarget
     if aimActive and Config.Aimbot.BindMode=="Always" and (not target or not isAlive(target)) then
         State.LockedTarget=getClosest();target=State.LockedTarget end
@@ -803,7 +810,6 @@ RS.RenderStepped:Connect(function(dt)
     if target and not isAlive(target) then State.LockedTarget=nil;target=nil
         if aimActive then State.LockedTarget=getClosest();target=State.LockedTarget end end
 
-    -- Status
     if target then
         if not isValidTarget(target) then
             lockLbl.Text="Target: "..target.Name.." (ragdoll)";lockLbl.TextColor3=T.orange
@@ -817,7 +823,6 @@ RS.RenderStepped:Connect(function(dt)
     spdLbl.Text=spdOn and("ON x"..string.format("%.2f",Config.Speed.Value).." ["..Config.Speed.BindMode.."]") or("OFF ["..Config.Speed.BindMode.."]")
     spdLbl.TextColor3=spdOn and T.green or T.dim
 
-    -- Lock visuals
     local sv2=target and isValidTarget(target) and aimActive and Config.Aimbot.Enabled
     if LockLine then
         if sv2 then local ch=target.Character;local part=ch:FindFirstChild(Config.Aimbot.HitPart) or ch:FindFirstChild("Head")
@@ -829,7 +834,6 @@ RS.RenderStepped:Connect(function(dt)
         else LockLine.Visible=false;if LockCircle then LockCircle.Visible=false end end
     end
 
-    -- Aimbot
     if aimActive and target and isValidTarget(target) and isAlive(LP) then
         local ch=target.Character;local part=ch:FindFirstChild(Config.Aimbot.HitPart) or ch:FindFirstChild("Head")
         if part then local vel=part.Velocity
@@ -838,70 +842,45 @@ RS.RenderStepped:Connect(function(dt)
         end
     end
 
-    --================================================================--
-    --              CAMERA LAG / FOV / TILT (clean, no lines)         --
-    --================================================================--
-    local ch=LP.Character
-    local moving=false
-    local moveDir=Vector3.new(0,0,0)
-
-    if ch then
-        local hum=ch:FindFirstChildOfClass("Humanoid")
-        if hum then moveDir=hum.MoveDirection;moving=moveDir.Magnitude>0.1 end
-    end
-
+    local ch=LP.Character;local moving=false;local moveDir=Vector3.zero
+    if ch then local hum=ch:FindFirstChildOfClass("Humanoid")
+        if hum then moveDir=hum.MoveDirection;moving=moveDir.Magnitude>0.1 end end
     local smooth=Config.Speed.CamSmooth
-
     if spdActive and moving and ch then
         State.CamLagOffset=State.CamLagOffset:Lerp(moveDir*Config.Speed.CamLag,smooth)
         State.CamFOVCurrent=lerp(State.CamFOVCurrent,Config.Speed.CamFOV,smooth*1.5)
-        local camRight=Camera.CFrame.RightVector
-        local sideways=moveDir:Dot(camRight)
+        local camRight=Camera.CFrame.RightVector;local sideways=moveDir:Dot(camRight)
         State.CamTiltCurrent=lerp(State.CamTiltCurrent,-sideways*Config.Speed.CamTilt,smooth)
     else
-        State.CamLagOffset=State.CamLagOffset:Lerp(Vector3.new(0,0,0),smooth*2)
+        State.CamLagOffset=State.CamLagOffset:Lerp(Vector3.zero,smooth*2)
         State.CamFOVCurrent=lerp(State.CamFOVCurrent,0,smooth*2)
         State.CamTiltCurrent=lerp(State.CamTiltCurrent,0,smooth*2)
-        if State.CamLagOffset.Magnitude<0.01 then State.CamLagOffset=Vector3.new(0,0,0) end
+        if State.CamLagOffset.Magnitude<0.01 then State.CamLagOffset=Vector3.zero end
         if math.abs(State.CamFOVCurrent)<0.1 then State.CamFOVCurrent=0 end
         if math.abs(State.CamTiltCurrent)<0.01 then State.CamTiltCurrent=0 end
     end
-
-    -- Apply camera lag
     if State.CamLagOffset.Magnitude>0.01 then
-        Camera.CFrame=CFrame.new(Camera.CFrame.Position-State.CamLagOffset)*Camera.CFrame.Rotation
-    end
-
-    -- Apply FOV
-    if math.abs(State.CamFOVCurrent)>0.1 then
-        Camera.FieldOfView=State.BaseFOV+State.CamFOVCurrent
+        Camera.CFrame=CFrame.new(Camera.CFrame.Position-State.CamLagOffset)*Camera.CFrame.Rotation end
+    if math.abs(State.CamFOVCurrent)>0.1 then Camera.FieldOfView=State.BaseFOV+State.CamFOVCurrent
     elseif not spdActive and math.abs(Camera.FieldOfView-State.BaseFOV)>0.1 then
-        Camera.FieldOfView=lerp(Camera.FieldOfView,State.BaseFOV,0.05)
-    end
-
-    -- Apply tilt
+        Camera.FieldOfView=lerp(Camera.FieldOfView,State.BaseFOV,0.05) end
     if math.abs(State.CamTiltCurrent)>0.01 then
-        Camera.CFrame=Camera.CFrame*CFrame.Angles(0,0,math.rad(State.CamTiltCurrent))
-    end
+        Camera.CFrame=Camera.CFrame*CFrame.Angles(0,0,math.rad(State.CamTiltCurrent)) end
 
-    -- Bind List
     BindList.Visible=Config.Misc.ShowBindList
-    local aE=Config.Aimbot.Enabled
-    blAimbot.Frame.Visible=aE
-    if aE then
+    blAimbot.Frame.Visible=Config.Aimbot.Enabled
+    if Config.Aimbot.Enabled then
         blAimbot.Dot.BackgroundColor3=aimActive and T.green or T.dim
         local bm=Config.Aimbot.BindMode
         blAimbot.Mode.Text=bm=="Always" and "Always" or keyName(Config.Aimbot.Bind,Config.Aimbot.BindIsKB).." · "..bm
         blAimbot.Mode.TextColor3=aimActive and ModeColors[bm] or T.dim
-        if aimActive and target then
-            blAimSub.Visible=true;blAimSub.Text="   → "..target.Name
+        if aimActive and target then blAimSub.Visible=true;blAimSub.Text="   → "..target.Name
             blAimSub.TextColor3=isValidTarget(target) and T.green or T.orange
         else blAimSub.Visible=false end
     else blAimSub.Visible=false end
 
-    local sE=Config.Speed.Enabled
-    blSpeed.Frame.Visible=sE
-    if sE then
+    blSpeed.Frame.Visible=Config.Speed.Enabled
+    if Config.Speed.Enabled then
         blSpeed.Dot.BackgroundColor3=spdOn and T.green or T.dim
         local bm2=Config.Speed.BindMode
         blSpeed.Mode.Text=bm2=="Always" and "Always" or keyName(Config.Speed.Bind,Config.Speed.BindIsKB).." · "..bm2
@@ -911,7 +890,6 @@ RS.RenderStepped:Connect(function(dt)
     else blSpeedSub.Visible=false end
 end)
 
--- CFrame Speed (Heartbeat)
 RS.Heartbeat:Connect(function()
     if isSpeedActive() then local ch=LP.Character
         if ch then local hrp=ch:FindFirstChild("HumanoidRootPart");local hum=ch:FindFirstChildOfClass("Humanoid")
@@ -919,35 +897,5 @@ RS.Heartbeat:Connect(function()
                 if dir.Magnitude>0 then hrp.CFrame=hrp.CFrame+dir*Config.Speed.Value end end end
     end
 end)
---// === ANTI-BLUR PATCH === //--
--- Fix 1: Snap UIScale to exactly 1 every frame when menu is open
-RS.RenderStepped:Connect(function()
-    if State.MenuOpen and not State.MenuTweening then
-        if MainScale.Scale ~= 1 then
-            MainScale.Scale = 1
-        end
-    end
-end)
 
--- Fix 2: Force pixel-perfect rendering
-Gui.IgnoreGuiInset = true
-
--- Fix 3: Remove CanvasGroup blur by reparenting
-if MenuContainer:IsA("CanvasGroup") then
-    local newContainer = Instance.new("Frame")
-    newContainer.Size = UDim2.new(1,0,1,0)
-    newContainer.BackgroundTransparency = 1
-    newContainer.Parent = Gui
-    
-    for _, child in ipairs(MenuContainer:GetChildren()) do
-        child.Parent = newContainer
-    end
-    
-    MenuContainer:Destroy()
-    MenuContainer = newContainer
-    Main.Parent = MenuContainer
-end
-
-print("[MARKTAPE] Anti-blur patch applied")
-
-print("[MARKTAPE] Da Strike v8.0 — Precise Speed + Clean Camera")
+print("[MARKTAPE] Da Strike v8.1 loaded — anti-blur, clean menu")
