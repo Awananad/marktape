@@ -1,11 +1,11 @@
 --[[
-    ██╗   ██╗ █████╗ ██████╗ ██╗  ██╗████████╗ █████╗ ██████╗ ███████╗
-    ███╗ ███║██╔══██╗██╔══██╗██║ ██╔╝╚══██╔══╝██╔══██╗██╔══██╗██╔════╝
-    ████████║███████║██████╔╝█████╔╝    ██║   ███████║██████╔╝█████╗
-    ██╔══██║██╔══██║██╔══██╗██╔═██╗    ██║   ██╔══██║██╔═══╝ ██╔══╝
-    ██║  ██║██║  ██║██║  ██║██║  ██╗   ██║   ██║  ██║██║     ███████╗
-    ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝╚═╝     ╚══════╝
-    Da Strike v8.1 — Anti-Blur Fix
+██╗ ██╗ █████╗ ██████╗ ██╗ ██╗████████╗ █████╗ ██████╗ ███████╗
+███╗ ███║██╔══██╗██╔══██╗██║ ██╔╝╚══██╔══╝██╔══██╗██╔══██╗██╔════╝
+████████║███████║██████╔╝█████╔╝ ██║ ███████║██████╔╝█████╗
+██╔══██║██╔══██║██╔══██╗██╔═██╗ ██║ ██╔══██║██╔═══╝ ██╔══╝
+██║ ██║██║ ██║██║ ██║██║ ██╗ ██║ ██║ ██║██║ ███████╗
+╚═╝ ╚═╝╚═╝ ╚═╝╚═╝ ╚═╝╚═╝ ╚═╝ ╚═╝ ╚═╝ ╚═╝╚═╝ ╚══════╝
+Da Strike v8.2 — Wall Check + Death Fix
 ]]
 local Players=game:GetService("Players")
 local RS=game:GetService("RunService")
@@ -18,7 +18,10 @@ local Camera=workspace.CurrentCamera
 local Config={
     Aimbot={Enabled=false,Bind=Enum.UserInputType.MouseButton2,BindIsKB=false,BindMode="Hold",
         PredictionX=0.12,PredictionY=0.12,AutoPrediction=false,Smooth=5,HitPart="Head",
-        FOVRadius=200,ShowFOV=true,RagdollCheck=true},
+        FOVRadius=200,ShowFOV=true,RagdollCheck=true,
+        WallCheck=true,  -- NEW: Wall Check
+        DeathCheck=true, -- NEW: Skip dead/falling targets
+        MinTargetHeight=-3}, -- NEW: Minimum height difference (ignore if target too low)
     Speed={Enabled=false,Bind=Enum.KeyCode.LeftShift,BindIsKB=true,BindMode="Press",Value=0.5,
         CamLag=3.5,CamFOV=15,CamTilt=4,CamSmooth=0.07},
     Menu={Bind=Enum.KeyCode.RightControl,BindIsKB=true,AnimSpeed=0.25},
@@ -29,7 +32,9 @@ local Config={
 local State={AimHold=false,AimPressed=false,SpeedHold=false,SpeedPressed=false,
     LockedTarget=nil,MenuOpen=true,MenuTweening=false,
     CamLagOffset=Vector3.new(0,0,0),CamFOVCurrent=0,CamTiltCurrent=0,
-    BaseFOV=70,IsMoving=false}
+    BaseFOV=70,IsMoving=false,
+    LastTargetPos=nil, -- NEW: Track last target position
+    TargetLostTime=0}  -- NEW: Time when target was lost
 
 local PingTiers={
     {max=40,px=0.04,py=0.04},{max=60,px=0.06,py=0.06},{max=80,px=0.085,py=0.085},
@@ -45,6 +50,7 @@ local T={
     togOff=Color3.fromRGB(48,48,68),inputBG=Color3.fromRGB(25,25,40),
     slFill=Color3.fromRGB(200,55,55),slBG=Color3.fromRGB(30,30,48),
     green=Color3.fromRGB(55,200,85),yellow=Color3.fromRGB(220,180,50),orange=Color3.fromRGB(230,130,50),
+    red=Color3.fromRGB(220,60,60),
 }
 local ModeColors={Always=T.green,Hold=T.accent,Press=T.yellow}
 local TL,TU={},{}
@@ -106,40 +112,252 @@ local function getAutoPred()
 end
 local function lerp(a,b,t) return a+(b-a)*t end
 
-local RagStates={[Enum.HumanoidStateType.Ragdoll]=1,[Enum.HumanoidStateType.FallingDown]=1,
-    [Enum.HumanoidStateType.Physics]=1,[Enum.HumanoidStateType.Dead]=1,[Enum.HumanoidStateType.GettingUp]=1}
+--================================================================--
+-- IMPROVED DEATH & RAGDOLL CHECK --
+--================================================================--
+local RagStates={
+    [Enum.HumanoidStateType.Ragdoll]=1,
+    [Enum.HumanoidStateType.FallingDown]=1,
+    [Enum.HumanoidStateType.Physics]=1,
+    [Enum.HumanoidStateType.Dead]=1,
+    [Enum.HumanoidStateType.GettingUp]=1
+}
+
 local function isRagdolled(ch)
-    if not ch then return true end;local hum=ch:FindFirstChildOfClass("Humanoid");if not hum then return true end
+    if not ch then return true end
+    local hum=ch:FindFirstChildOfClass("Humanoid")
+    if not hum then return true end
+    
+    -- Check humanoid state
     local ok,st=pcall(function() return hum:GetState() end)
-    if ok and RagStates[st] then return true end;if hum.PlatformStand then return true end
-    for _,n in ipairs({"Ragdolled","Ragdoll","IsRagdolled"}) do
-        local v=ch:FindFirstChild(n);if v and v:IsA("BoolValue") and v.Value then return true end end
-    local ra=false;pcall(function()
-        if ch:GetAttribute("Ragdolled") or ch:GetAttribute("Ragdoll") or hum:GetAttribute("Ragdolled") or hum:GetAttribute("Ragdoll") then ra=true end
-    end);if ra then return true end
-    local hm=false;for _,d in ipairs(ch:GetDescendants()) do
-        if d:IsA("Motor6D") and d.Enabled~=false and d.Part0 and d.Part1 and d.Part0:IsDescendantOf(ch) and d.Part1:IsDescendantOf(ch) then hm=true;break end
-    end;if not hm then return true end;return false
+    if ok and RagStates[st] then return true end
+    
+    -- Check PlatformStand
+    if hum.PlatformStand then return true end
+    
+    -- Check common ragdoll values
+    for _,n in ipairs({"Ragdolled","Ragdoll","IsRagdolled","KnockedOut","Knocked","Stunned"}) do
+        local v=ch:FindFirstChild(n)
+        if v and v:IsA("BoolValue") and v.Value then return true end
+    end
+    
+    -- Check attributes
+    local ra=false
+    pcall(function()
+        if ch:GetAttribute("Ragdolled") or ch:GetAttribute("Ragdoll") or 
+           ch:GetAttribute("KnockedOut") or ch:GetAttribute("Dead") or
+           hum:GetAttribute("Ragdolled") or hum:GetAttribute("Ragdoll") or
+           hum:GetAttribute("Dead") then 
+            ra=true 
+        end
+    end)
+    if ra then return true end
+    
+    -- Check for active Motor6D (no motors = ragdolled)
+    local hm=false
+    for _,d in ipairs(ch:GetDescendants()) do
+        if d:IsA("Motor6D") and d.Enabled~=false and d.Part0 and d.Part1 and 
+           d.Part0:IsDescendantOf(ch) and d.Part1:IsDescendantOf(ch) then 
+            hm=true
+            break 
+        end
+    end
+    if not hm then return true end
+    
+    return false
 end
+
+-- NEW: Check if target is dead or dying
+local function isDead(ch)
+    if not ch then return true end
+    local hum = ch:FindFirstChildOfClass("Humanoid")
+    if not hum then return true end
+    
+    -- Direct health check
+    if hum.Health <= 0 then return true end
+    
+    -- Check death state
+    local ok, st = pcall(function() return hum:GetState() end)
+    if ok and st == Enum.HumanoidStateType.Dead then return true end
+    
+    -- Check for common death indicators
+    local hrp = ch:FindFirstChild("HumanoidRootPart")
+    local head = ch:FindFirstChild("Head")
+    
+    -- If HRP or Head is gone, likely dead
+    if not hrp or not head then return true end
+    
+    -- Check if anchored (dead body cleanup)
+    if hrp.Anchored then return true end
+    
+    return false
+end
+
+-- NEW: Check if target is falling/on ground (dead body falling)
+local function isFalling(ch, myChar)
+    if not ch or not myChar then return false end
+    
+    local theirHRP = ch:FindFirstChild("HumanoidRootPart")
+    local myHRP = myChar:FindFirstChild("HumanoidRootPart")
+    
+    if not theirHRP or not myHRP then return false end
+    
+    -- Check if target is significantly below us
+    local heightDiff = theirHRP.Position.Y - myHRP.Position.Y
+    if heightDiff < Config.Aimbot.MinTargetHeight then
+        return true
+    end
+    
+    -- Check vertical velocity (falling fast)
+    local vel = theirHRP.Velocity
+    if vel.Y < -50 then -- Falling fast
+        return true
+    end
+    
+    return false
+end
+
 local function isAlive(plr)
-    if not plr then return false end;local ch=plr.Character;if not ch then return false end
-    local h=ch:FindFirstChildOfClass("Humanoid");if not h or h.Health<=0 then return false end
-    return ch:FindFirstChild("HumanoidRootPart")~=nil
+    if not plr then return false end
+    local ch=plr.Character
+    if not ch then return false end
+    
+    local h=ch:FindFirstChildOfClass("Humanoid")
+    if not h or h.Health<=0 then return false end
+    
+    -- Check for HumanoidRootPart
+    local hrp = ch:FindFirstChild("HumanoidRootPart")
+    if not hrp then return false end
+    
+    -- Check death state
+    local ok, st = pcall(function() return h:GetState() end)
+    if ok and st == Enum.HumanoidStateType.Dead then return false end
+    
+    return true
 end
+
+--================================================================--
+-- WALL CHECK (VISIBILITY) --
+--================================================================--
+local WallCheckParams = RaycastParams.new()
+WallCheckParams.FilterType = Enum.RaycastFilterType.Blacklist
+WallCheckParams.IgnoreWater = true
+
+local function isVisible(targetPart, targetChar)
+    if not Config.Aimbot.WallCheck then return true end -- Skip if disabled
+    if not targetPart or not targetChar then return false end
+    
+    local myChar = LP.Character
+    if not myChar then return false end
+    
+    local origin = Camera.CFrame.Position
+    local targetPos = targetPart.Position
+    local direction = (targetPos - origin)
+    local distance = direction.Magnitude
+    
+    -- Update raycast filter
+    WallCheckParams.FilterDescendantsInstances = {myChar, targetChar}
+    
+    local result = workspace:Raycast(origin, direction.Unit * (distance - 0.5), WallCheckParams)
+    
+    if result then
+        -- Hit something - check if it's part of target
+        if result.Instance:IsDescendantOf(targetChar) then
+            return true
+        end
+        -- Hit a wall or other object
+        return false
+    end
+    
+    return true
+end
+
+-- NEW: Extended visibility check with multiple points
+local function isVisibleExtended(targetChar)
+    if not Config.Aimbot.WallCheck then return true end
+    if not targetChar then return false end
+    
+    -- Check multiple body parts for visibility
+    local partsToCheck = {"Head", "HumanoidRootPart", "UpperTorso", "Torso"}
+    
+    for _, partName in ipairs(partsToCheck) do
+        local part = targetChar:FindFirstChild(partName)
+        if part and isVisible(part, targetChar) then
+            return true
+        end
+    end
+    
+    return false
+end
+
+--================================================================--
+-- IMPROVED TARGET VALIDATION --
+--================================================================--
 local function isValidTarget(plr)
     if not isAlive(plr) then return false end
-    if Config.Aimbot.RagdollCheck and isRagdolled(plr.Character) then return false end;return true
+    
+    local ch = plr.Character
+    if not ch then return false end
+    
+    -- Check death
+    if Config.Aimbot.DeathCheck and isDead(ch) then return false end
+    
+    -- Check ragdoll
+    if Config.Aimbot.RagdollCheck and isRagdolled(ch) then return false end
+    
+    -- Check if falling (dead body)
+    local myChar = LP.Character
+    if Config.Aimbot.DeathCheck and myChar and isFalling(ch, myChar) then return false end
+    
+    -- Check wall
+    local part = ch:FindFirstChild(Config.Aimbot.HitPart) or ch:FindFirstChild("Head")
+    if Config.Aimbot.WallCheck and part and not isVisible(part, ch) then return false end
+    
+    return true
 end
+
+-- Separate check for aim (includes wall check)
+local function canAimAt(plr)
+    if not isAlive(plr) then return false end
+    
+    local ch = plr.Character
+    if not ch then return false end
+    
+    -- Death check (instant)
+    if isDead(ch) then return false end
+    
+    -- Ragdoll check
+    if Config.Aimbot.RagdollCheck and isRagdolled(ch) then return false end
+    
+    -- Height check (don't aim at bodies on ground)
+    local myChar = LP.Character
+    if myChar and isFalling(ch, myChar) then return false end
+    
+    -- Wall check
+    local part = ch:FindFirstChild(Config.Aimbot.HitPart) or ch:FindFirstChild("Head")
+    if Config.Aimbot.WallCheck and part and not isVisible(part, ch) then return false end
+    
+    return true
+end
+
 local function isAimActive()
-    if not Config.Aimbot.Enabled then return false end;local m=Config.Aimbot.BindMode
-    if m=="Always" then return true end;if m=="Hold" then return State.AimHold end
-    if m=="Press" then return State.AimPressed end;return false
+    if not Config.Aimbot.Enabled then return false end
+    local m=Config.Aimbot.BindMode
+    if m=="Always" then return true end
+    if m=="Hold" then return State.AimHold end
+    if m=="Press" then return State.AimPressed end
+    return false
 end
+
 local function isSpeedActive()
-    if not Config.Speed.Enabled then return false end;local m=Config.Speed.BindMode
-    if m=="Always" then return true end;if m=="Hold" then return State.SpeedHold end
-    if m=="Press" then return State.SpeedPressed end;return false
+    if not Config.Speed.Enabled then return false end
+    local m=Config.Speed.BindMode
+    if m=="Always" then return true end
+    if m=="Hold" then return State.SpeedHold end
+    if m=="Press" then return State.SpeedPressed end
+    return false
 end
+
 local function matchBind(input,bk,bkb)
     if bkb then return input.UserInputType==Enum.UserInputType.Keyboard and input.KeyCode==bk
     else return input.UserInputType==bk end
@@ -148,10 +366,10 @@ end
 task.spawn(function() task.wait(0.5);State.BaseFOV=Camera.FieldOfView end)
 
 --================================================================--
---                SCREEN GUI + MENU (ANTI-BLUR)                   --
+-- SCREEN GUI + MENU --
 --================================================================--
 local Gui=make("ScreenGui",{
-    Name="MT_v81",
+    Name="MT_v82",
     ZIndexBehavior=Enum.ZIndexBehavior.Sibling,
     ResetOnSpawn=false,
     IgnoreGuiInset=true,
@@ -159,7 +377,6 @@ local Gui=make("ScreenGui",{
 pcall(function() Gui.Parent=game:GetService("CoreGui") end)
 if not Gui.Parent then Gui.Parent=LP:WaitForChild("PlayerGui") end
 
--- Frame вместо CanvasGroup = без блюра
 local MenuContainer=make("Frame",{
     Size=UDim2.new(1,0,1,0),
     BackgroundTransparency=1,
@@ -168,7 +385,7 @@ local MenuContainer=make("Frame",{
 
 local Main=make("Frame",{
     AnchorPoint=Vector2.new(0.5,0.5),
-    Size=UDim2.new(0,580,0,580),
+    Size=UDim2.new(0,580,0,620), -- Slightly taller for new options
     Position=UDim2.new(0.5,0,0.5,0),
     BackgroundColor3=T.bg,
     BorderSizePixel=0,
@@ -181,7 +398,7 @@ tl(mainStroke,"Color","border")
 local MainScale=make("UIScale",{Scale=1,Parent=Main})
 
 --================================================================--
---              MENU ANIMATION (простая, рабочая)                 --
+-- MENU ANIMATION --
 --================================================================--
 local animConn = nil
 
@@ -190,7 +407,6 @@ local function animOpen()
     State.MenuTweening=true
     State.MenuOpen=true
 
-    -- Отключаем старую анимацию если есть
     if animConn then pcall(function() animConn:Disconnect() end) end
 
     MenuContainer.Visible=true
@@ -201,12 +417,12 @@ local function animOpen()
 
     animConn=RS.RenderStepped:Connect(function()
         local prog=math.clamp((tick()-t0)/dur,0,1)
-        local e=1-(1-prog)^4 -- Quart Out
+        local e=1-(1-prog)^4
 
         MainScale.Scale=0.85+0.15*e
 
         if prog>=1 then
-            MainScale.Scale=1 -- SNAP ровно 1 = без блюра
+            MainScale.Scale=1
             State.MenuTweening=false
             if animConn then animConn:Disconnect(); animConn=nil end
         end
@@ -231,7 +447,7 @@ local function animClose()
 
         if prog>=1 then
             MenuContainer.Visible=false
-            MainScale.Scale=1 -- Reset
+            MainScale.Scale=1
             State.MenuTweening=false
             if animConn then animConn:Disconnect(); animConn=nil end
         end
@@ -248,7 +464,7 @@ local function toggleMenu()
 end
 
 --================================================================--
---                        HEADER                                  --
+-- HEADER --
 --================================================================--
 local Header=make("Frame",{Size=UDim2.new(1,0,0,36),BackgroundColor3=T.bg2,BorderSizePixel=0,Parent=Main})
 tl(Header,"BackgroundColor3","bg2")
@@ -260,7 +476,7 @@ local hTitle=make("TextLabel",{Size=UDim2.new(0,100,1,0),Position=UDim2.new(0,14
     TextXAlignment=Enum.TextXAlignment.Left,Parent=Header})
 tl(hTitle,"TextColor3","accent")
 make("TextLabel",{Size=UDim2.new(0,150,1,0),Position=UDim2.new(0,108,0,0),BackgroundTransparency=1,
-    Text="| Da Strike v8.1",TextColor3=T.dim,Font=Enum.Font.Gotham,TextSize=12,
+    Text="| Da Strike v8.2",TextColor3=T.dim,Font=Enum.Font.Gotham,TextSize=12,
     TextXAlignment=Enum.TextXAlignment.Left,Parent=Header})
 local CloseBtn=make("TextButton",{Size=UDim2.new(0,36,0,36),Position=UDim2.new(1,-36,0,0),
     BackgroundTransparency=1,Text="×",TextColor3=T.dim,Font=Enum.Font.GothamBold,TextSize=20,Parent=Header})
@@ -280,7 +496,7 @@ do local dr,dS,sP
 end
 
 --================================================================--
---                         TABS                                   --
+-- TABS --
 --================================================================--
 local TabBar=make("Frame",{Size=UDim2.new(1,0,0,32),Position=UDim2.new(0,0,0,38),BackgroundColor3=T.bg2,BorderSizePixel=0,Parent=Main})
 tl(TabBar,"BackgroundColor3","bg2")
@@ -307,7 +523,7 @@ local function addTab(name,order)
 end
 
 --================================================================--
---                  BIND MODE POPUP                               --
+-- BIND MODE POPUP --
 --================================================================--
 local activePopupCB,popupJust=nil,false
 local BindPopup=make("Frame",{Size=UDim2.new(0,120,0,0),AutomaticSize=Enum.AutomaticSize.Y,
@@ -346,7 +562,7 @@ UIS.InputBegan:Connect(function(input)
 end)
 
 --================================================================--
---                   CONTROL BUILDERS                             --
+-- CONTROL BUILDERS --
 --================================================================--
 local function addSection(parent,name,order)
     local sec=make("Frame",{Size=UDim2.new(1,0,0,0),AutomaticSize=Enum.AutomaticSize.Y,
@@ -417,13 +633,13 @@ local function addDropdown(parent,name,opts,def,order,cb)
         TextColor3=T.text,Font=Enum.Font.Gotham,TextSize=11,TextXAlignment=Enum.TextXAlignment.Left,Parent=fr})
     local idx=1;for i,o in ipairs(opts) do if o==def then idx=i end end
     local btn=make("TextButton",{Size=UDim2.new(0.46,0,0,24),Position=UDim2.new(0.54,0,0,2),
-        BackgroundColor3=T.inputBG,BorderSizePixel=0,Text="◀  "..opts[idx].."  ▶",
+        BackgroundColor3=T.inputBG,BorderSizePixel=0,Text="◀ "..opts[idx].." ▶",
         TextColor3=T.text,Font=Enum.Font.Gotham,TextSize=11,Parent=fr})
     tl(btn,"BackgroundColor3","inputBG")
     make("UICorner",{CornerRadius=UDim.new(0,4),Parent=btn})
     local ds=make("UIStroke",{Color=T.border,Thickness=1,Parent=btn});tl(ds,"Color","border")
     btn.MouseButton1Click:Connect(function()
-        idx=idx%#opts+1;btn.Text="◀  "..opts[idx].."  ▶";if cb then cb(opts[idx]) end
+        idx=idx%#opts+1;btn.Text="◀ "..opts[idx].." ▶";if cb then cb(opts[idx]) end
     end)
 end
 
@@ -442,12 +658,12 @@ local function addKeybind(parent,name,defKey,defIsKB,defMode,order,keyCb,modeCb)
         BackgroundTransparency=1,Text="rmb → mode",TextColor3=Color3.fromRGB(70,70,90),
         Font=Enum.Font.Gotham,TextSize=9,TextXAlignment=Enum.TextXAlignment.Right,Parent=fr,Visible=false})
     local function ut()
-        if mode=="Always" then btn.Text="⚡ Always" else btn.Text=keyName(key,isKB).."  ·  "..mode end
+        if mode=="Always" then btn.Text="⚡ Always" else btn.Text=keyName(key,isKB).." · "..mode end
         btn.TextColor3=ModeColors[mode] or T.accent
     end;ut();tu(function() ut() end)
     btn.MouseEnter:Connect(function() hint.Visible=true end);btn.MouseLeave:Connect(function() hint.Visible=false end)
     btn.MouseButton1Click:Connect(function()
-        if listening then return end;BindPopup.Visible=false;listening=true;btn.Text="[  ...  ]";btn.TextColor3=T.accentH end)
+        if listening then return end;BindPopup.Visible=false;listening=true;btn.Text="[ ... ]";btn.TextColor3=T.accentH end)
     btn.InputBegan:Connect(function(input)
         if input.UserInputType==Enum.UserInputType.MouseButton2 and not listening then
             showPopup(btn,mode,function(nm)
@@ -539,7 +755,7 @@ local function addColorPicker(parent,name,default,order,cb)
 end
 
 --================================================================--
---                      BUILD TABS                                --
+-- BUILD TABS --
 --================================================================--
 local tabAim=addTab("AIMBOT",1)
 local tabMove=addTab("MOVEMENT",2)
@@ -547,6 +763,7 @@ local tabCfg=addTab("CONFIG",3)
 local tabMisc=addTab("MISC",4)
 allTabs[1].Content.Visible=true;allTabs[1].Ind.Visible=true;allTabs[1].Btn.TextColor3=T.text
 
+-- AIMBOT TAB
 local secAim=addSection(tabAim,"Aimbot",1)
 addToggle(secAim,"Enable",Config.Aimbot.Enabled,1,function(v) Config.Aimbot.Enabled=v end)
 addKeybind(secAim,"Bind",Config.Aimbot.Bind,Config.Aimbot.BindIsKB,Config.Aimbot.BindMode,2,
@@ -556,8 +773,14 @@ addDropdown(secAim,"Hit Part",{"Head","HumanoidRootPart","UpperTorso","LowerTors
     Config.Aimbot.HitPart,3,function(v) Config.Aimbot.HitPart=v end)
 addSlider(secAim,"Smooth",1,20,Config.Aimbot.Smooth,0.5,4,function(v) Config.Aimbot.Smooth=v end)
 
-local secRag=addSection(tabAim,"Ragdoll Filter",2)
-addToggle(secRag,"Skip Ragdolled",Config.Aimbot.RagdollCheck,1,function(v) Config.Aimbot.RagdollCheck=v end)
+-- NEW: Checks Section
+local secChecks=addSection(tabAim,"Target Checks",2)
+addToggle(secChecks,"Wall Check",Config.Aimbot.WallCheck,1,function(v) Config.Aimbot.WallCheck=v end)
+addToggle(secChecks,"Death Check",Config.Aimbot.DeathCheck,2,function(v) Config.Aimbot.DeathCheck=v end)
+addToggle(secChecks,"Ragdoll Check",Config.Aimbot.RagdollCheck,3,function(v) Config.Aimbot.RagdollCheck=v end)
+addSlider(secChecks,"Min Height Diff",-10,0,Config.Aimbot.MinTargetHeight,0.5,4,function(v) Config.Aimbot.MinTargetHeight=v end)
+local wallLbl=addStatus(secChecks,"Wall: -",5)
+local deathLbl=addStatus(secChecks,"Death: -",6)
 
 local secPred=addSection(tabAim,"Prediction",3)
 addToggle(secPred,"Auto Prediction",Config.Aimbot.AutoPrediction,1,function(v) Config.Aimbot.AutoPrediction=v end)
@@ -574,6 +797,7 @@ local lockLbl=addStatus(secLock,"Target: None",1)
 local ragLbl=addStatus(secLock,"",2)
 local modeLbl=addStatus(secLock,"Mode: Hold",3)
 
+-- MOVEMENT TAB
 local secSpd=addSection(tabMove,"CFrame Speed",1)
 addToggle(secSpd,"Enable",Config.Speed.Enabled,1,function(v)
     Config.Speed.Enabled=v;if not v then State.SpeedHold=false;State.SpeedPressed=false end end)
@@ -589,6 +813,7 @@ addSlider(secCam,"FOV Boost",0,40,Config.Speed.CamFOV,1,2,function(v) Config.Spe
 addSlider(secCam,"Camera Tilt",0,12,Config.Speed.CamTilt,0.5,3,function(v) Config.Speed.CamTilt=v end)
 addSlider(secCam,"Cam Smooth",0.02,0.2,Config.Speed.CamSmooth,0.01,4,function(v) Config.Speed.CamSmooth=v end)
 
+-- CONFIG TAB
 local secMCfg=addSection(tabCfg,"Menu Settings",1)
 addKeybindSimple(secMCfg,"Menu Toggle Bind",Config.Menu.Bind,Config.Menu.BindIsKB,1,function(k,kb)
     Config.Menu.Bind=k;Config.Menu.BindIsKB=kb end)
@@ -597,6 +822,7 @@ addSlider(secMCfg,"Animation Speed",0.1,1.0,Config.Menu.AnimSpeed,0.05,2,functio
 local secHelp=addSection(tabCfg,"Bind Modes",2)
 for i,txt in ipairs({"RMB on bind → mode popup","⚡ Always","✊ Hold","👆 Press","LMB → rebind"}) do addStatus(secHelp,txt,i) end
 
+-- MISC TAB
 local secPresets=addSection(tabMisc,"Theme Presets",1)
 local presetNames={};for _,p in ipairs(Presets) do table.insert(presetNames,p[1]) end
 local accentPicker,bgPicker
@@ -625,7 +851,7 @@ addToggle(secBL,"Show Bind List",Config.Misc.ShowBindList,1,function(v) Config.M
 addStatus(secBL,"Drag to reposition (menu open only)",2)
 
 --================================================================--
---                      BIND LIST                                 --
+-- BIND LIST --
 --================================================================--
 local BindList=make("Frame",{AnchorPoint=Vector2.new(1,0),Size=UDim2.new(0,200,0,0),
     AutomaticSize=Enum.AutomaticSize.Y,Position=UDim2.new(1,-12,0,36),
@@ -668,14 +894,14 @@ do local dr,dS,sP
 end
 
 --================================================================--
---                    DRAWING                                     --
+-- DRAWING --
 --================================================================--
 pcall(function() FOVCircle=Drawing.new("Circle");FOVCircle.Color=T.accent;FOVCircle.Thickness=1.5;FOVCircle.NumSides=80;FOVCircle.Filled=false;FOVCircle.Visible=false;FOVCircle.Transparency=0.7;FOVCircle.Radius=200;FOVExists=true end)
 pcall(function() LockLine=Drawing.new("Line");LockLine.Color=T.green;LockLine.Thickness=1.5;LockLine.Visible=false;LockLine.Transparency=0.6 end)
 pcall(function() LockCircle=Drawing.new("Circle");LockCircle.Color=T.green;LockCircle.Thickness=2;LockCircle.NumSides=40;LockCircle.Filled=false;LockCircle.Visible=false;LockCircle.Transparency=0.5;LockCircle.Radius=18 end)
 
 --================================================================--
---                      WATERMARK                                 --
+-- WATERMARK --
 --================================================================--
 local wmBasePos=UDim2.new(0,10,0,6)
 local WM=make("Frame",{AnchorPoint=Vector2.new(0,0),Size=UDim2.new(0,380,0,24),Position=wmBasePos,
@@ -694,19 +920,45 @@ local function showWM() if wmTweening then return end;wmTweening=true;WM.Visible
 local function hideWM() if wmTweening then return end;wmTweening=true
     tw(WM,{BackgroundTransparency=1},0.2);tw(wmScale,{Scale=0.9},0.2,function() WM.Visible=false;wmTweening=false end) end
 
+--================================================================--
+-- GET CLOSEST (WITH WALL CHECK) --
+--================================================================--
 local function getClosest()
-    local best,bestD=nil,Config.Aimbot.FOVRadius;local mp=UIS:GetMouseLocation()
+    local best,bestD=nil,Config.Aimbot.FOVRadius
+    local mp=UIS:GetMouseLocation()
+    
     for _,plr in ipairs(Players:GetPlayers()) do
-        if plr~=LP and isValidTarget(plr) then local ch=plr.Character
+        if plr~=LP and isAlive(plr) then
+            local ch=plr.Character
+            
+            -- Skip dead targets immediately
+            if isDead(ch) then continue end
+            
+            -- Skip ragdolled
+            if Config.Aimbot.RagdollCheck and isRagdolled(ch) then continue end
+            
+            -- Skip falling bodies
+            local myChar = LP.Character
+            if myChar and isFalling(ch, myChar) then continue end
+            
             local part=ch:FindFirstChild(Config.Aimbot.HitPart) or ch:FindFirstChild("Head")
-            if part then local sp,vis=Camera:WorldToViewportPoint(part.Position)
-                if vis then local d=(Vector2.new(sp.X,sp.Y)-mp).Magnitude;if d<bestD then bestD=d;best=plr end end end
+            if part then
+                -- Wall check
+                if Config.Aimbot.WallCheck and not isVisible(part, ch) then continue end
+                
+                local sp,vis=Camera:WorldToViewportPoint(part.Position)
+                if vis then 
+                    local d=(Vector2.new(sp.X,sp.Y)-mp).Magnitude
+                    if d<bestD then bestD=d;best=plr end 
+                end
+            end
         end
-    end;return best
+    end
+    return best
 end
 
 --================================================================--
---                     INPUT                                      --
+-- INPUT --
 --================================================================--
 UIS.InputBegan:Connect(function(input,gpe)
     if gpe then return end
@@ -731,7 +983,7 @@ UIS.InputEnded:Connect(function(input)
 end)
 
 --================================================================--
---                  AUTO PREDICTION                               --
+-- AUTO PREDICTION --
 --================================================================--
 task.spawn(function()
     while task.wait(0.5) do
@@ -745,14 +997,14 @@ task.spawn(function()
 end)
 
 --================================================================--
---                  WATERMARK UPDATER                             --
+-- WATERMARK UPDATER --
 --================================================================--
 task.spawn(function()
     local frames,last=0,tick()
     RS.RenderStepped:Connect(function() frames=frames+1 end)
     while task.wait(0.5) do
         local now=tick();local fps=math.floor(frames/(now-last));frames=0;last=now
-        wmLabel.Text=string.format("marktape.cc  |  v8.1  |  %dfps  |  %dms  |  %s",fps,getPing(),os.date("%H:%M:%S"))
+        wmLabel.Text=string.format("marktape.cc | v8.2 | %dfps | %dms | %s",fps,getPing(),os.date("%H:%M:%S"))
     end
 end)
 
@@ -789,7 +1041,7 @@ RS:BindToRenderStep("WM_Anim",Enum.RenderPriority.Last.Value+1,function(dt)
 end)
 
 --================================================================--
---                    MAIN RENDER LOOP                             --
+-- MAIN RENDER LOOP --
 --================================================================--
 RS.RenderStepped:Connect(function(dt)
     Camera=workspace.CurrentCamera
@@ -801,47 +1053,143 @@ RS.RenderStepped:Connect(function(dt)
 
     if FOVExists and FOVCircle then
         FOVCircle.Position=Vector2.new(mp.X,mp.Y);FOVCircle.Radius=Config.Aimbot.FOVRadius
-        FOVCircle.Visible=Config.Aimbot.Enabled and Config.Aimbot.ShowFOV end
+        FOVCircle.Visible=Config.Aimbot.Enabled and Config.Aimbot.ShowFOV 
+    end
 
     local target=State.LockedTarget
-    if aimActive and Config.Aimbot.BindMode=="Always" and (not target or not isAlive(target)) then
-        State.LockedTarget=getClosest();target=State.LockedTarget end
-    if not aimActive then if State.LockedTarget then State.LockedTarget=nil end;target=nil end
-    if target and not isAlive(target) then State.LockedTarget=nil;target=nil
-        if aimActive then State.LockedTarget=getClosest();target=State.LockedTarget end end
-
+    
+    -- IMPROVED: Instant target drop if dead/behind wall
     if target then
-        if not isValidTarget(target) then
-            lockLbl.Text="Target: "..target.Name.." (ragdoll)";lockLbl.TextColor3=T.orange
+        local ch = target.Character
+        if ch then
+            -- Instant death check
+            if isDead(ch) then
+                State.LockedTarget = nil
+                target = nil
+            -- Wall check
+            elseif Config.Aimbot.WallCheck then
+                local part = ch:FindFirstChild(Config.Aimbot.HitPart) or ch:FindFirstChild("Head")
+                if part and not isVisible(part, ch) then
+                    State.LockedTarget = nil
+                    target = nil
+                end
+            -- Height check (falling body)
+            elseif LP.Character and isFalling(ch, LP.Character) then
+                State.LockedTarget = nil
+                target = nil
+            end
+        else
+            State.LockedTarget = nil
+            target = nil
+        end
+    end
+    
+    -- Find new target if in Always mode
+    if aimActive and Config.Aimbot.BindMode=="Always" and (not target or not isAlive(target)) then
+        State.LockedTarget=getClosest();target=State.LockedTarget 
+    end
+    
+    if not aimActive then 
+        if State.LockedTarget then State.LockedTarget=nil end
+        target=nil 
+    end
+    
+    if target and not isAlive(target) then 
+        State.LockedTarget=nil;target=nil
+        if aimActive then State.LockedTarget=getClosest();target=State.LockedTarget end 
+    end
+
+    -- Update status labels
+    local wallStatus = Config.Aimbot.WallCheck and "ON" or "OFF"
+    local deathStatus = Config.Aimbot.DeathCheck and "ON" or "OFF"
+    
+    if target then
+        local ch = target.Character
+        local part = ch and (ch:FindFirstChild(Config.Aimbot.HitPart) or ch:FindFirstChild("Head"))
+        
+        if ch and part then
+            local behindWall = Config.Aimbot.WallCheck and not isVisible(part, ch)
+            local dead = isDead(ch)
+            
+            wallLbl.Text = "Wall: " .. (behindWall and "⚠ BLOCKED" or "✓ Visible")
+            wallLbl.TextColor3 = behindWall and T.red or T.green
+            
+            deathLbl.Text = "Death: " .. (dead and "☠ DEAD" or "✓ Alive")
+            deathLbl.TextColor3 = dead and T.red or T.green
+        end
+        
+        if not canAimAt(target) then
+            lockLbl.Text="Target: "..target.Name.." (blocked)"
+            lockLbl.TextColor3=T.orange
             ragLbl.Text="⚠ Waiting...";ragLbl.TextColor3=T.yellow
-        else lockLbl.Text="Target: "..target.Name;lockLbl.TextColor3=T.green;ragLbl.Text="✓ Locked";ragLbl.TextColor3=T.green end
-    else lockLbl.Text=aimActive and "Searching..." or "Target: None"
-        lockLbl.TextColor3=aimActive and T.yellow or T.dim;ragLbl.Text="" end
-    modeLbl.Text="Mode: "..Config.Aimbot.BindMode;modeLbl.TextColor3=ModeColors[Config.Aimbot.BindMode] or T.dim
+        else 
+            lockLbl.Text="Target: "..target.Name
+            lockLbl.TextColor3=T.green
+            ragLbl.Text="✓ Locked";ragLbl.TextColor3=T.green 
+        end
+    else 
+        lockLbl.Text=aimActive and "Searching..." or "Target: None"
+        lockLbl.TextColor3=aimActive and T.yellow or T.dim
+        ragLbl.Text=""
+        wallLbl.Text = "Wall: " .. wallStatus
+        wallLbl.TextColor3 = T.dim
+        deathLbl.Text = "Death: " .. deathStatus
+        deathLbl.TextColor3 = T.dim
+    end
+    
+    modeLbl.Text="Mode: "..Config.Aimbot.BindMode
+    modeLbl.TextColor3=ModeColors[Config.Aimbot.BindMode] or T.dim
 
     local spdOn=spdActive
     spdLbl.Text=spdOn and("ON x"..string.format("%.2f",Config.Speed.Value).." ["..Config.Speed.BindMode.."]") or("OFF ["..Config.Speed.BindMode.."]")
     spdLbl.TextColor3=spdOn and T.green or T.dim
 
-    local sv2=target and isValidTarget(target) and aimActive and Config.Aimbot.Enabled
+    -- Drawing visuals - only show if target is valid
+    local showVisuals = target and canAimAt(target) and aimActive and Config.Aimbot.Enabled
     if LockLine then
-        if sv2 then local ch=target.Character;local part=ch:FindFirstChild(Config.Aimbot.HitPart) or ch:FindFirstChild("Head")
-            if part then local sp,vis=Camera:WorldToViewportPoint(part.Position)
-                if vis then LockLine.From=Vector2.new(mp.X,mp.Y);LockLine.To=Vector2.new(sp.X,sp.Y);LockLine.Visible=true
-                    if LockCircle then LockCircle.Position=Vector2.new(sp.X,sp.Y);LockCircle.Visible=true end
-                else LockLine.Visible=false;if LockCircle then LockCircle.Visible=false end end
-            else LockLine.Visible=false;if LockCircle then LockCircle.Visible=false end end
-        else LockLine.Visible=false;if LockCircle then LockCircle.Visible=false end end
+        if showVisuals then 
+            local ch=target.Character
+            local part=ch:FindFirstChild(Config.Aimbot.HitPart) or ch:FindFirstChild("Head")
+            if part then 
+                local sp,vis=Camera:WorldToViewportPoint(part.Position)
+                if vis then 
+                    LockLine.From=Vector2.new(mp.X,mp.Y)
+                    LockLine.To=Vector2.new(sp.X,sp.Y)
+                    LockLine.Visible=true
+                    if LockCircle then 
+                        LockCircle.Position=Vector2.new(sp.X,sp.Y)
+                        LockCircle.Visible=true 
+                    end
+                else 
+                    LockLine.Visible=false
+                    if LockCircle then LockCircle.Visible=false end 
+                end
+            else 
+                LockLine.Visible=false
+                if LockCircle then LockCircle.Visible=false end 
+            end
+        else 
+            LockLine.Visible=false
+            if LockCircle then LockCircle.Visible=false end 
+        end
     end
 
-    if aimActive and target and isValidTarget(target) and isAlive(LP) then
-        local ch=target.Character;local part=ch:FindFirstChild(Config.Aimbot.HitPart) or ch:FindFirstChild("Head")
-        if part then local vel=part.Velocity
-            local pp=part.Position+Vector3.new(vel.X*Config.Aimbot.PredictionX,vel.Y*Config.Aimbot.PredictionY,vel.Z*Config.Aimbot.PredictionX)
+    -- AIMBOT - only aim if target passes all checks
+    if aimActive and target and canAimAt(target) and isAlive(LP) then
+        local ch=target.Character
+        local part=ch:FindFirstChild(Config.Aimbot.HitPart) or ch:FindFirstChild("Head")
+        if part then 
+            local vel=part.Velocity
+            local pp=part.Position+Vector3.new(
+                vel.X*Config.Aimbot.PredictionX,
+                vel.Y*Config.Aimbot.PredictionY,
+                vel.Z*Config.Aimbot.PredictionX
+            )
             Camera.CFrame=Camera.CFrame:Lerp(CFrame.new(Camera.CFrame.Position,pp),1/Config.Aimbot.Smooth)
         end
     end
 
+    -- Speed camera effects
     local ch=LP.Character;local moving=false;local moveDir=Vector3.zero
     if ch then local hum=ch:FindFirstChildOfClass("Humanoid")
         if hum then moveDir=hum.MoveDirection;moving=moveDir.Magnitude>0.1 end end
@@ -867,6 +1215,7 @@ RS.RenderStepped:Connect(function(dt)
     if math.abs(State.CamTiltCurrent)>0.01 then
         Camera.CFrame=Camera.CFrame*CFrame.Angles(0,0,math.rad(State.CamTiltCurrent)) end
 
+    -- Bind list updates
     BindList.Visible=Config.Misc.ShowBindList
     blAimbot.Frame.Visible=Config.Aimbot.Enabled
     if Config.Aimbot.Enabled then
@@ -874,8 +1223,10 @@ RS.RenderStepped:Connect(function(dt)
         local bm=Config.Aimbot.BindMode
         blAimbot.Mode.Text=bm=="Always" and "Always" or keyName(Config.Aimbot.Bind,Config.Aimbot.BindIsKB).." · "..bm
         blAimbot.Mode.TextColor3=aimActive and ModeColors[bm] or T.dim
-        if aimActive and target then blAimSub.Visible=true;blAimSub.Text="   → "..target.Name
-            blAimSub.TextColor3=isValidTarget(target) and T.green or T.orange
+        if aimActive and target then 
+            blAimSub.Visible=true
+            blAimSub.Text="   → "..target.Name
+            blAimSub.TextColor3=canAimAt(target) and T.green or T.orange
         else blAimSub.Visible=false end
     else blAimSub.Visible=false end
 
@@ -885,17 +1236,27 @@ RS.RenderStepped:Connect(function(dt)
         local bm2=Config.Speed.BindMode
         blSpeed.Mode.Text=bm2=="Always" and "Always" or keyName(Config.Speed.Bind,Config.Speed.BindIsKB).." · "..bm2
         blSpeed.Mode.TextColor3=spdOn and ModeColors[bm2] or T.dim
-        if spdOn then blSpeedSub.Visible=true;blSpeedSub.Text="   → x"..string.format("%.2f",Config.Speed.Value);blSpeedSub.TextColor3=T.green
+        if spdOn then 
+            blSpeedSub.Visible=true
+            blSpeedSub.Text="   → x"..string.format("%.2f",Config.Speed.Value)
+            blSpeedSub.TextColor3=T.green
         else blSpeedSub.Visible=false end
     else blSpeedSub.Visible=false end
 end)
 
+-- Speed movement
 RS.Heartbeat:Connect(function()
-    if isSpeedActive() then local ch=LP.Character
-        if ch then local hrp=ch:FindFirstChild("HumanoidRootPart");local hum=ch:FindFirstChildOfClass("Humanoid")
-            if hrp and hum and hum.Health>0 then local dir=hum.MoveDirection
-                if dir.Magnitude>0 then hrp.CFrame=hrp.CFrame+dir*Config.Speed.Value end end end
+    if isSpeedActive() then 
+        local ch=LP.Character
+        if ch then 
+            local hrp=ch:FindFirstChild("HumanoidRootPart")
+            local hum=ch:FindFirstChildOfClass("Humanoid")
+            if hrp and hum and hum.Health>0 then 
+                local dir=hum.MoveDirection
+                if dir.Magnitude>0 then hrp.CFrame=hrp.CFrame+dir*Config.Speed.Value end 
+            end 
+        end
     end
 end)
 
-print("[MARKTAPE] Da Strike v8.1 loaded — anti-blur, clean menu")
+print("[MARKTAPE] Da Strike v8.2 loaded — Wall Check + Death Fix")
